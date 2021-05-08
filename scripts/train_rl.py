@@ -23,6 +23,7 @@ from babyai.model import ACModel
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+import transformers
 
 
 # Parse arguments
@@ -84,6 +85,8 @@ logger = logging.getLogger(__name__)
 # Define obss preprocessor
 if 'emb' in args.arch:
     obss_preprocessor = utils.IntObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
+elif 'transformer' in args.arch:
+    obss_preprocessor = utils.TransformerObssPreprocessor(envs[0].observation_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), use_pixel)
 else:
     obss_preprocessor = utils.ObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
 
@@ -97,7 +100,8 @@ if acmodel is None:
                           args.image_dim, args.memory_dim, args.instr_dim,
                           not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
 
-obss_preprocessor.vocab.save()
+if obss_preprocessor.vocab is not None:
+    obss_preprocessor.vocab.save()
 utils.save_model(acmodel, args.model)
 
 if torch.cuda.is_available():
@@ -225,7 +229,8 @@ while status['num_frames'] < args.frames:
     # Save obss preprocessor vocabulary and model
 
     if args.save_interval > 0 and status['i'] % args.save_interval == 0:
-        obss_preprocessor.vocab.save()
+        if obss_preprocessor.vocab is not None:
+            obss_preprocessor.vocab.save()
         with open(status_path, 'w') as dst:
             json.dump(status, dst)
             utils.save_model(acmodel, args.model)
@@ -247,7 +252,8 @@ while status['num_frames'] < args.frames:
             save_model = True
         if save_model:
             utils.save_model(acmodel, args.model + '_best')
-            obss_preprocessor.vocab.save(utils.get_vocab_path(args.model + '_best'))
+            if obss_preprocessor.vocab is not None:
+                obss_preprocessor.vocab.save(utils.get_vocab_path(args.model + '_best'))
             logger.info("Return {: .2f}; best model is saved".format(mean_return))
         else:
             logger.info("Return {: .2f}; not the best model; not saved".format(mean_return))

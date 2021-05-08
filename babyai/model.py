@@ -6,6 +6,7 @@ from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import babyai.rl
 from babyai.rl.utils.supervised_losses import required_heads
+import transformers
 
 
 # From https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
@@ -59,6 +60,16 @@ class ImageBOWEmbedding(nn.Module):
        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
 
 
+class ImageBOWEmbeddingPretrained(nn.Module):
+    def __init__(self, pretrained_model):
+        super().__init__()
+        self.embedding = pretrained_model.get_input_embeddings()
+        # self.apply(initialize_parameters)
+
+    def forward(self, inputs):
+        return self.embedding(inputs).sum(1)
+
+
 class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
                  image_dim=128, memory_dim=128, instr_dim=128,
@@ -86,18 +97,27 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'transformer']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
-        # if not self.use_instr:
-        #     raise ValueError("FiLM architecture can be used when instructions are enabled")
+        use_transformer = 'transformer' in arch
+        if use_transformer:
+            if not self.use_instr:
+                raise ValueError("Transformers cannot be used when instructions are disabled")
+            self.lang_model = 'transformer'
+            self.instr_dim = 768
+            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
+            self.final_instr_dim = self.instr_dim
+
+
         self.image_conv = nn.Sequential(*[
             *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
+            *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if use_transformer and not pixel else []),
             *([nn.Conv2d(
                 in_channels=3, out_channels=128, kernel_size=(8, 8),
                 stride=8, padding=0)] if pixel else []),
             nn.Conv2d(
-                in_channels=128 if use_bow or pixel else 3, out_channels=128,
+                in_channels=128 if use_bow or pixel else 768 if use_transformer else 3, out_channels=128,
                 kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
@@ -121,6 +141,8 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                         self.instr_dim, gru_dim, batch_first=True,
                         bidirectional=(self.lang_model in ['bigru', 'attgru']))
                     self.final_instr_dim = self.instr_dim
+                elif self.lang_model == 'transformer':
+                    pass
                 else:
                     kernel_dim = 64
                     kernel_sizes = [3, 4]
@@ -128,7 +150,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                         nn.Conv2d(1, kernel_dim, (K, self.instr_dim)) for K in kernel_sizes])
                     self.final_instr_dim = kernel_dim * len(kernel_sizes)
 
-            if self.lang_model == 'attgru':
+            if self.lang_model in ['attgru', 'transformer']:
                 self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
 
             num_module = 2
@@ -217,10 +239,13 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def forward(self, obs, memory, instr_embedding=None):
         if self.use_instr and instr_embedding is None:
             instr_embedding = self._get_instr_embedding(obs.instr)
-        if self.use_instr and self.lang_model == "attgru":
+        if self.use_instr and self.lang_model in {"attgru", "transformer"}:
             # outputs: B x L x D
             # memory: B x M
-            mask = (obs.instr != 0).float()
+            if self.lang_model == 'transformer':
+                mask = obs.instr.attention_mask.float()
+            else:
+                mask = (obs.instr != 0).float()
             # The mask tensor has the same length as obs.instr, and
             # thus can be both shorter and longer than instr_embedding.
             # It can be longer if instr_embedding is computed
@@ -273,13 +298,14 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
 
     def _get_instr_embedding(self, instr):
-        lengths = (instr != 0).sum(1).long()
         if self.lang_model == 'gru':
+            lengths = (instr != 0).sum(1).long()
             out, _ = self.instr_rnn(self.word_embedding(instr))
             hidden = out[range(len(lengths)), lengths-1, :]
             return hidden
 
         elif self.lang_model in ['bigru', 'attgru']:
+            lengths = (instr != 0).sum(1).long()
             masks = (instr != 0).float()
 
             if lengths.shape[0] > 1:
@@ -307,6 +333,10 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 final_states = final_states[iperm_idx]
 
             return outputs if self.lang_model == 'attgru' else final_states
+
+        elif self.lang_model == 'transformer':
+            outputs = self.instr_rnn(**instr).last_hidden_state
+            return outputs
 
         else:
             ValueError("Undefined instruction architecture: {}".format(self.use_instr))

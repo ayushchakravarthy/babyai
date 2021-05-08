@@ -141,3 +141,41 @@ class IntObssPreprocessor(object):
             obs_.instr = self.instr_preproc(obss, device=device)
 
         return obs_
+
+
+class TransformerObssPreprocessor(object):
+    def __init__(self, obs_space, tokenizer, use_pixels):
+        self.tokenizer = tokenizer
+        self.vocab = None
+
+        image_obs_space = obs_space.spaces["image"]
+        if use_pixels:
+            self.image_preproc = RawImagePreprocessor()
+            self.obs_space = {
+                "image": 147,
+                "instr": self.tokenizer.vocab_size
+            }
+        else:
+            self.image_preproc = IntImagePreprocessor(image_obs_space.shape[-1], max_high=image_obs_space.high.max())
+            self.obs_space = {
+                "image": self.image_preproc.max_size,
+                "instr": self.tokenizer.vocab_size
+            }
+        
+
+    def __call__(self, obss, device=None):
+        obs_ = babyai.rl.DictList()
+
+        if "image" in self.obs_space.keys():
+            obs_.image = self.image_preproc(obss, device=device)
+
+        if "instr" in self.obs_space.keys():
+            raw_instrs = []
+
+            for obs in obss:
+                instr = obs["mission"]
+                raw_instrs.append(instr)
+
+            obs_.instr = babyai.rl.DictList(self.tokenizer(raw_instrs, return_tensors = 'pt', padding = True).to(device))
+
+        return obs_
