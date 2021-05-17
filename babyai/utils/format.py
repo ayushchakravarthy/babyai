@@ -4,12 +4,22 @@ import numpy
 import re
 import torch
 import babyai.rl
+import transformers
 
 from .. import utils
 
 
 def get_vocab_path(model_name):
     return os.path.join(utils.get_model_dir(model_name), "vocab.json")
+
+def select_obss_preprocessor(model_name, obs_space = None, pretrained_model = None):
+    if 'emb' in model_name:
+        obss_preprocessor = utils.IntObssPreprocessor(model_name, obs_space, pretrained_model)
+    elif 'transformer' in model_name:
+        obss_preprocessor = utils.TransformerObssPreprocessor(obs_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), 'pixel' in model_name)
+    else:
+        obss_preprocessor = utils.ObssPreprocessor(model_name, obs_space, pretrained_model)
+    return obss_preprocessor
 
 
 class Vocabulary:

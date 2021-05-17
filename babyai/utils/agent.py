@@ -48,7 +48,7 @@ class ModelAgent(Agent):
         self.argmax = argmax
         self.memory = None
 
-    def act_batch(self, many_obs):
+    def act_batch(self, many_obs, probes = False):
         if self.memory is None:
             self.memory = torch.zeros(
                 len(many_obs), self.model.memory_size, device=self.device)
@@ -57,9 +57,13 @@ class ModelAgent(Agent):
         preprocessed_obs = self.obss_preprocessor(many_obs, device=self.device)
 
         with torch.no_grad():
-            model_results = self.model(preprocessed_obs, self.memory)
+            model_results = self.model(preprocessed_obs, self.memory, probe_attention = probes)
             dist = model_results['dist']
             value = model_results['value']
+            if probes:
+                probes_ret = {'attention': model_results['attention'], 'encoded_inputs': model_results['encoded_inputs']}
+            else:
+                probes_ret = None
             self.memory = model_results['memory']
 
         if self.argmax:
@@ -67,12 +71,10 @@ class ModelAgent(Agent):
         else:
             action = dist.sample()
 
-        return {'action': action,
-                'dist': dist,
-                'value': value}
+        return {'action': action, 'dist': dist, 'value': value, 'probes': probes_ret}
 
-    def act(self, obs):
-        return self.act_batch([obs])
+    def act(self, obs, probes = False):
+        return self.act_batch([obs], probes)
 
     def analyze_feedback(self, reward, done):
         if isinstance(done, tuple):
@@ -159,7 +161,7 @@ def load_agent(env, model_name, demos_name=None, demos_origin=None, argmax=True,
     if model_name == 'BOT':
         return BotAgent(env)
     elif model_name is not None:
-        obss_preprocessor = utils.ObssPreprocessor(model_name, env.observation_space)
+        obss_preprocessor = utils.select_obss_preprocessor(model_name, env.observation_space, model_name)
         return ModelAgent(model_name, obss_preprocessor, argmax)
     elif demos_origin is not None or demos_name is not None:
         return DemoAgent(demos_name=demos_name, env_name=env_name, origin=demos_origin)

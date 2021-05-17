@@ -9,6 +9,7 @@ import gym
 import time
 
 import babyai.utils as utils
+from gym_minigrid.wrappers import RGBImgPartialObsWrapper
 
 # Parse arguments
 
@@ -29,6 +30,8 @@ parser.add_argument("--pause", type=float, default=0.1,
                     help="the pause between two consequent actions of an agent")
 parser.add_argument("--manual-mode", action="store_true", default=False,
                     help="Allows you to take control of the agent at any point of time")
+parser.add_argument("--probes", action="store_true", default=False,
+                    help="enable probes of instr attention")
 
 args = parser.parse_args()
 
@@ -54,6 +57,8 @@ utils.seed(args.seed)
 # Generate environment
 
 env = gym.make(args.env)
+if args.model is not None and 'pixel' in args.model:
+    env = RGBImgPartialObsWrapper(env)
 env.seed(args.seed)
 
 global obs
@@ -96,20 +101,22 @@ def keyDownCb(event):
         obs = env.reset()
         print("Mission: {}".format(obs["mission"]))
 
-
+rwrapper = utils.EnvRendererWrapper(env, probes = args.probes)
+rwrapper.render(mode = 'human')
 if args.manual_mode:
-    env.render('human')
     env.window.reg_key_handler(keyDownCb)
 
 step = 0
 episode_num = 0
 while True:
     time.sleep(args.pause)
-    env.render("human")
-    if not args.manual_mode:
-        result = agent.act(obs)
+    if args.manual_mode:
+        rwrapper.render(mode = 'human')
+    else:
+        result = agent.act(obs, probes = args.probes)
         obs, reward, done, _ = env.step(result['action'])
         agent.analyze_feedback(reward, done)
+        rwrapper.render(mode = 'human', probes = result['probes'])
         if 'dist' in result and 'value' in result:
             dist, value = result['dist'], result['value']
             dist_str = ", ".join("{:.4f}".format(float(p)) for p in dist.probs[0])

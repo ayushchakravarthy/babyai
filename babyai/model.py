@@ -236,7 +236,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def semi_memory_size(self):
         return self.memory_dim
 
-    def forward(self, obs, memory, instr_embedding=None):
+    def forward(self, obs, memory, instr_embedding=None, probe_attention = False):
         if self.use_instr and instr_embedding is None:
             instr_embedding = self._get_instr_embedding(obs.instr)
         if self.use_instr and self.lang_model in {"attgru", "transformer"}:
@@ -295,7 +295,10 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         x = self.critic(embedding)
         value = x.squeeze(1)
 
-        return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
+        if not probe_attention:
+            return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
+        else:
+            return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions, 'attention': attention, 'encoded_inputs': dict(obs.instr)}
 
     def _get_instr_embedding(self, instr):
         if self.lang_model == 'gru':

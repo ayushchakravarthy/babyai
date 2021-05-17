@@ -23,7 +23,7 @@ from babyai.model import ACModel
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper
-import transformers
+# import transformers
 
 
 # Parse arguments
@@ -83,12 +83,13 @@ utils.configure_logging(args.model)
 logger = logging.getLogger(__name__)
 
 # Define obss preprocessor
-if 'emb' in args.arch:
-    obss_preprocessor = utils.IntObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
-elif 'transformer' in args.arch:
-    obss_preprocessor = utils.TransformerObssPreprocessor(envs[0].observation_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), use_pixel)
-else:
-    obss_preprocessor = utils.ObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
+# if 'emb' in args.arch:
+#     obss_preprocessor = utils.IntObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
+# elif 'transformer' in args.arch:
+#     obss_preprocessor = utils.TransformerObssPreprocessor(envs[0].observation_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), use_pixel)
+# else:
+#     obss_preprocessor = utils.ObssPreprocessor(args.model, envs[0].observation_space, args.pretrained_model)
+obss_preprocessor = utils.select_obss_preprocessor(args.model, envs[0].observation_space, args.pretrained_model)
 
 # Define actor-critic model
 acmodel = utils.load_model(args.model, raise_not_found=False)
