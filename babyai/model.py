@@ -97,17 +97,18 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'transformer']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
-        use_transformer = 'transformer' in arch
-        if use_transformer:
+        if self.lang_model == 'transformer':
             if not self.use_instr:
                 raise ValueError("Transformers cannot be used when instructions are disabled")
-            self.lang_model = 'transformer'
+            use_transformer = True
             self.instr_dim = 768
             self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
+        else:
+            use_transformer = False
 
 
         self.image_conv = nn.Sequential(*[
