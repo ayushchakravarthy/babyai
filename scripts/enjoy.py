@@ -47,8 +47,8 @@ action_map = {
 }
 
 assert args.model is not None or args.demos is not None, "--model or --demos must be specified."
-if args.seed is None:
-    args.seed = 0 if args.model is not None else 1
+# if args.seed is None:
+#     args.seed = 0 if args.model is not None else 1
 
 # Set seed for all randomness sources
 
@@ -56,7 +56,7 @@ utils.seed(args.seed)
 
 # Generate environment
 
-env = gym.make(args.env)
+env = gym.make(args.env, training = False)
 if args.model is not None and 'pixel' in args.model:
     env = RGBImgPartialObsWrapper(env)
 env.seed(args.seed)
@@ -114,9 +114,9 @@ while True:
         rwrapper.render(mode = 'human')
     else:
         result = agent.act(obs, probes = args.probes)
+        rwrapper.render(mode = 'human', probes = result['probes'], actions = result['dist'].probs[0])
         obs, reward, done, _ = env.step(result['action'])
         agent.analyze_feedback(reward, done)
-        rwrapper.render(mode = 'human', probes = result['probes'])
         if 'dist' in result and 'value' in result:
             dist, value = result['dist'], result['value']
             dist_str = ", ".join("{:.4f}".format(float(p)) for p in dist.probs[0])

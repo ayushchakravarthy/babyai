@@ -52,7 +52,7 @@ utils.seed(args.seed)
 
 # Generate environments
 envs = []
-use_pixel = 'pixel' in args.arch
+use_pixel = 'pixels' in args.arch
 for i in range(args.procs):
     env = gym.make(args.env)
     if use_pixel:

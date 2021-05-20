@@ -24,7 +24,7 @@ def create_folders_if_necessary(path):
 
 
 def seed(seed):
-    random.seed(seed)
+    random.seed(None if seed == 0 else seed)
     numpy.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
