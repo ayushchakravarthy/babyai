@@ -91,7 +91,8 @@ class ArgumentParser(argparse.ArgumentParser):
 
         # Set seed for all randomness sources
         if args.seed == 0:
-            args.seed = np.random.randint(10000)
+            rng = np.random.default_rng()
+            args.seed = int(rng.integers(0, int(2**31)))
         if args.task_id_seed:
             args.seed = int(os.environ['SLURM_ARRAY_TASK_ID'])
             print('set seed to {}'.format(args.seed))

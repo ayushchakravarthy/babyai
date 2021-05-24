@@ -116,7 +116,7 @@ else:
 # Thus, there starts to be a difference in the random state. If we want to avoid it, in order to make sure that
 # the results of supervised-loss-coef=0. and extra-binary-info=0 match, we need to reseed here.
 
-utils.seed(args.seed)
+# utils.seed(args.seed)
 
 # Restore training status
 
