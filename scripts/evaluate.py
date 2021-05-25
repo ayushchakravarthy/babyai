@@ -53,7 +53,7 @@ def main(args, seed, episodes):
     elif isinstance(agent, utils.BotAgent) or args.contiguous_episodes:
         logs = evaluate(agent, env, episodes, False)
     else:
-        logs = batch_evaluate(agent, args.env, seed, episodes)
+        logs = batch_evaluate(agent, args.env, seed, episodes, pixel = 'pixels' in args.model)
 
 
     return logs
