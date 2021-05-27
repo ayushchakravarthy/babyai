@@ -9,6 +9,7 @@ import gym
 import time
 import datetime
 
+import numpy as np
 import babyai.utils as utils
 from babyai.evaluate import evaluate_demo_agent, batch_evaluate, evaluate
 # Parse arguments
@@ -64,6 +65,9 @@ if __name__ == "__main__":
     assert_text = "ONE of --model or --demos-origin or --demos must be specified."
     assert int(args.model is None) + int(args.demos_origin is None) + int(args.demos is None) == 2, assert_text
 
+    if args.seed == 0:
+        rng = np.random.default_rng()
+        args.seed = int(rng.integers(0, int(2**31)))
     start_time = time.time()
     logs = main(args, args.seed, args.episodes)
     end_time = time.time()

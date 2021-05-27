@@ -10,6 +10,7 @@ import time
 
 import babyai.utils as utils
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+from .renderer import EnvRendererWrapper
 
 try:
     import dash
@@ -40,8 +41,6 @@ parser.add_argument("--manual-mode", action="store_true", default=False,
                     help="Allows you to take control of the agent at any point of time")
 parser.add_argument("--probes", action="store_true", default=False,
                     help="enable probes of instr attention")
-parser.add_argument("--testing", action="store_true", default=False,
-                    help="send the flag disabling training to env")
 
 args = parser.parse_args()
 
@@ -65,10 +64,7 @@ assert args.model is not None or args.demos is not None, "--model or --demos mus
 utils.seed(args.seed)
 
 # Generate environment
-if args.testing:
-    env = gym.make(args.env, training = False)
-else:
-    env = gym.make(args.env)
+env = gym.make(args.env)
 if args.model is not None and 'pixel' in args.model:
     env = RGBImgPartialObsWrapper(env)
 env.seed(args.seed)
@@ -119,5 +115,5 @@ if args.manual_mode:
 
 if __name__ == '__main__':
     app = dash.Dash(__name__)
-    renderer = utils.EnvRendererWrapper(app, env, agent, args.manual_mode, args.probes, args.pause)
+    renderer = EnvRendererWrapper(app, env, agent, args.manual_mode, args.probes, args.pause)
     app.run_server(debug=True)

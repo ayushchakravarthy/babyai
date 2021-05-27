@@ -1,7 +1,7 @@
 
+import sys
 import numpy as np
 import transformers
-
 
 try:
 	import dash

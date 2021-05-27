@@ -9,7 +9,6 @@ from babyai.utils.format import ObssPreprocessor, IntObssPreprocessor, Transform
 from babyai.utils.log import (
     get_log_path, get_log_dir, synthesize, configure_logging)
 from babyai.utils.model import get_model_dir, load_model, save_model
-from babyai.utils.renderer import EnvRendererWrapper
 
 
 def storage_dir():

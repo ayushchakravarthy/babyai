@@ -5,17 +5,23 @@ from .levelgen import *
 
 
 class Level_GotoLocalColorSplits(RoomGridLevel):
-    def __init__(self, room_size=8, num_dists=8, seed=None, training = True):
+    def __init__(self, room_size=8, num_dists=8, seed=None, training = True, baseline = False):
         self.num_dists = num_dists
 
         # Non-intersecting color sets for boxes and balls, all colors for keys
         self.training = training
+        self.baseline = baseline
         if self.training:
             self.box_colors = ['red', 'green', 'blue']
             self.ball_colors = ['purple', 'yellow', 'grey']
+            if not self.baseline:
+                self.shapes = ['key', 'ball', 'box']
+            else:
+                self.shapes = ['key']
         else:
             self.box_colors = ['purple', 'yellow', 'grey']
             self.ball_colors = ['red', 'green', 'blue']
+            self.shapes = ['ball', 'box']
         self.all_colors = self.box_colors + self.ball_colors
 
         super().__init__(
@@ -58,7 +64,7 @@ class Level_GotoLocalColorSplits(RoomGridLevel):
         dists = []
 
         while len(dists) < num_distractors:
-            obj_type = self._rand_elem(['key', 'ball', 'box'])
+            obj_type = self._rand_elem(self.shapes)
             color = self.color_selector(obj_type)
             obj = (obj_type, color)
 
@@ -80,6 +86,15 @@ class Level_GotoLocalColorSplits(RoomGridLevel):
 
         return dists
 
+
+class Level_GotoLocalColorSplitsTest(Level_GotoLocalColorSplits):
+    def __init__(self, room_size=8, num_dists=8, seed=None):
+        super().__init__(room_size=room_size, seed=seed, training = False)
+
+
+class Level_GotoLocalColorSplitsBaseline(Level_GotoLocalColorSplits):
+    def __init__(self, room_size=8, num_dists=8, seed=None):
+        super().__init__(room_size=room_size, seed=seed, baseline = True)
 
 # Register the levels in this file
 register_levels(__name__, globals())
