@@ -2,6 +2,7 @@
 import sys
 import numpy as np
 import transformers
+import babyai.utils as utils
 
 try:
 	import dash
@@ -24,6 +25,9 @@ class EnvRendererWrapper():
 		self.agent = agent
 		self.probes_mode = probes_mode
 		self.manual_mode = manual_mode
+
+		if not isinstance(self.agent.obss_preprocessor, utils.TransformerObssPreprocessor):
+			self.lookup = {i:w for w,i in self.agent.obss_preprocessor.vocab.vocab.items()}
 
 		self.step = 0
 		self.episode_num = 0
@@ -85,7 +89,10 @@ class EnvRendererWrapper():
 		return updatefigs
 
 	def draw_probes(self, probes):
-		instructions = self.tokenizer.decode(probes['encoded_inputs']['input_ids'][0]).split()
+		if type(probes['encoded_inputs']) == dict:
+			instructions = self.tokenizer.decode(probes['encoded_inputs']['input_ids'][0]).split()
+		else:
+			instructions = [self.lookup[i] for i in probes['encoded_inputs'].cpu().numpy()[0]]
 		att_weights = probes['attention'].cpu().numpy().reshape((len(instructions), 1))
 		# print(att_weights)
 		

@@ -299,7 +299,13 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         if not probe_attention:
             return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
         else:
-            return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions, 'attention': attention, 'encoded_inputs': dict(obs.instr)}
+            if self.lang_model == 'transformer':
+                return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions, 'attention': attention, 'encoded_inputs': dict(obs.instr)}
+            elif self.lang_model == 'attgru':
+                return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions, 'attention': attention, 'encoded_inputs': obs.instr}
+            else:
+                print('No probes available for instruction architecture {}'.format(self.lang_model))
+                return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
 
     def _get_instr_embedding(self, instr):
         if self.lang_model == 'gru':

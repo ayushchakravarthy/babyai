@@ -10,7 +10,7 @@ import time
 
 import babyai.utils as utils
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper
-from .renderer import EnvRendererWrapper
+from renderer import EnvRendererWrapper
 
 try:
     import dash
