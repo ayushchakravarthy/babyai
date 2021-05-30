@@ -81,12 +81,16 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         use_bow = 'bow' in arch
         pixel = 'pixel' in arch
         self.res = 'res' in arch
+        transformer = 'transformer' in arch
 
         # Decide which components are enabled
         self.use_instr = use_instr
         self.use_memory = use_memory
         self.arch = arch
-        self.lang_model = lang_model
+        if transformer:
+            self.lang_model = "transformer"
+        else:
+            self.lang_model = lang_model
         self.aux_info = aux_info
         if self.res and image_dim != 128:
             raise ValueError(f"image_dim is {image_dim}, expected 128")
@@ -97,7 +101,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'transformer']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
         if self.lang_model == 'transformer':
@@ -105,7 +109,8 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 raise ValueError("Transformers cannot be used when instructions are disabled")
             use_transformer = True
             self.instr_dim = 768
-            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
+            # maybe we should allow for model finetuning during training?
+            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
             self.final_instr_dim = self.instr_dim
         else:
             use_transformer = False
