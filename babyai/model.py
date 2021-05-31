@@ -74,7 +74,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
                  image_dim=128, memory_dim=128, instr_dim=128,
                  use_instr=False, lang_model="gru", use_memory=False,
-                 arch="bow_endpool_res", aux_info=None):
+                 arch="bow_endpool_res", aux_info=None, finetune_transformer = False):
         super().__init__()
 
         endpool = 'endpool' in arch
@@ -109,8 +109,10 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 raise ValueError("Transformers cannot be used when instructions are disabled")
             use_transformer = True
             self.instr_dim = 768
-            # maybe we should allow for model finetuning during training?
-            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
+            if finetune_transformer:
+                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
+            else:
+                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
         else:
             use_transformer = False
