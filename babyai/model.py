@@ -81,16 +81,12 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         use_bow = 'bow' in arch
         pixel = 'pixel' in arch
         self.res = 'res' in arch
-        transformer = 'transformer' in arch
 
         # Decide which components are enabled
         self.use_instr = use_instr
         self.use_memory = use_memory
         self.arch = arch
-        if transformer:
-            self.lang_model = "transformer"
-        else:
-            self.lang_model = lang_model
+        self.lang_model = lang_model
         self.aux_info = aux_info
         if self.res and image_dim != 128:
             raise ValueError(f"image_dim is {image_dim}, expected 128")
@@ -110,10 +106,11 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             use_transformer = True
             self.instr_dim = 768
             # maybe we should allow for model finetuning during training?
-            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
+            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
         else:
             use_transformer = False
+        print(self.lang_model)
 
 
         self.image_conv = nn.Sequential(*[

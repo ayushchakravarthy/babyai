@@ -93,6 +93,7 @@ if acmodel is None:
                           args.image_dim, args.memory_dim, args.instr_dim,
                           not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
 
+
 if obss_preprocessor.vocab is not None:
     obss_preprocessor.vocab.save()
 utils.save_model(acmodel, args.model)
