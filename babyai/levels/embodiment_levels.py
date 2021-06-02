@@ -1,35 +1,39 @@
 
 import numpy as np
 import gym
+from gym_minigrid.minigrid import COLORS, WorldObj
+
 from .verifier import *
 from .levelgen import *
 
 
 class ColorSplitsBase(RoomGridLevel):
-    def __init__(self, room_size=8, num_dists=8, seed=None, training = True, baseline = False):
+    def __init__(self, room_size=8, num_dists=8, seed=None, box_colors = ['red', 'green', 'blue'], ball_colors = ['purple', 'yellow', 'grey'], training = True, baseline = False, **kwargs):
         self.num_dists = num_dists
 
         # Non-intersecting color sets for boxes and balls, all colors for keys
         self.training = training
         self.baseline = baseline
+        self.all_colors = set(COLORS.keys())
         if self.training:
-            self.box_colors = ['red', 'green', 'blue']
-            self.ball_colors = ['purple', 'yellow', 'grey']
+            self.box_colors = box_colors
+            self.ball_colors = ball_colors
             if not self.baseline:
                 self.shapes = ['key', 'ball', 'box']
             else:
                 self.shapes = ['key']
         else:
-            self.box_colors = ['purple', 'yellow', 'grey']
-            self.ball_colors = ['red', 'green', 'blue']
+            self.box_colors = list(self.all_colors - set(box_colors))
+            self.ball_colors = list(self.all_colors - set(ball_colors))
             self.shapes = ['ball', 'box']
-        self.all_colors = self.box_colors + self.ball_colors
+        self.all_colors = list(self.all_colors)
 
         super().__init__(
             num_rows=1,
             num_cols=1,
             room_size=room_size,
-            seed=seed
+            seed=seed,
+            **kwargs
         )
 
     def color_selector(self, obj_type):
@@ -80,6 +84,39 @@ class ColorSplitsBase(RoomGridLevel):
 
         return dists
 
+
+class ColorSplitsTestBase(ColorSplitsBase):
+    def __init__(self, room_size=8, num_dists=3, seed=None):
+        super().__init__(room_size = room_size, num_dists = num_dists, seed = seed, training = False, max_steps = 16)
+
+    def add_distractors(self):
+        tgt_shape = self._rand_elem(self.shapes)
+        tgt_color = self.color_selector(tgt_shape)
+        getobj = lambda shape, color: WorldObj.decode(*WorldObj(shape, color).encode())
+        target = getobj(tgt_shape, tgt_color)
+        
+        dcolor = self._rand_elem(self.all_colors)
+        while dcolor == tgt_color:
+            dcolor = self._rand_elem(self.all_colors)
+        d1 = getobj(tgt_shape, dcolor)
+
+        dshape = self._rand_elem(self.shapes)
+        while dshape == tgt_shape:
+            dshape = self._rand_elem(self.shapes)
+        d2 = getobj(dshape, tgt_color)
+
+        objs = [target, d1, d2]
+        self.np_random.shuffle(objs)
+        locs = [(2,3), (4,3), (6,3)]
+
+        room = self.get_room(0, 0)
+        for i in range(3):
+            pos = self.place_obj(objs[i], locs[i], (1,1), max_tries = 1)
+            room.objs.append(objs[i])
+
+        return target
+
+
 class Level_GotoLocalColorSplits(ColorSplitsBase):
     def __init__(self, room_size=8, num_dists=8, seed=None):
         super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = True)
@@ -119,27 +156,31 @@ class Level_GotoLocalColorSplitsBaseline(ColorSplitsBase):
             self.instrs = GoToInstr(ObjDesc(obj.type))
 
 class Level_PickupLocalColorSplits(ColorSplitsBase):
-    def __init__(self, room_size=8, num_dists=8, seed=None):
-        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = True)
+    def __init__(self, room_size=8, num_dists=8, seed=None, training = True):
+        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = training)
 
     def gen_mission(self):
         self.place_agent()
         objs = self.add_distractors(num_distractors=self.num_dists, all_unique=False)
         self.check_objs_reachable()
         obj = self._rand_elem(objs)
-        self.instrs = PickupInstr(ObjDesc(obj.type, obj.color))
+        self.instrs = PickupInstr(ObjDesc(obj.type, obj.color), strict = True)
 
 
-class Level_PickupLocalColorSplitsTest(ColorSplitsBase):
+class Level_PickupLocalColorSplitsTest(Level_PickupLocalColorSplits):
     def __init__(self, room_size=8, num_dists=8, seed=None):
         super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = False)
 
+
+class Level_PickupLocalColorSplitsTestStrict(ColorSplitsTestBase):
     def gen_mission(self):
-        self.place_agent()
-        objs = self.add_distractors(num_distractors=self.num_dists, all_unique=False)
-        self.check_objs_reachable()
-        obj = self._rand_elem(objs)
-        self.instrs = PickupInstr(ObjDesc(obj.type, obj.color))
+        self.agent_pos = None
+        pos = self.place_obj(None, (4,6), (1,1), max_tries=1)
+        self.agent_pos = pos
+        self.agent_dir = 0
+
+        target = self.add_distractors()
+        self.instrs = PickupInstr(ObjDesc(target.type, target.color), strict = True)
 
 
 class Level_PickupLocalColorSplitsBaseline(ColorSplitsBase):
@@ -168,10 +209,13 @@ class Level_PickupGotoLocalColorSplits(ColorSplitsBase):
         self.check_objs_reachable()
         obj = self._rand_elem(objs)
         if mode == 'Goto':
-            if obj.type == 'key':
-                self.instrs = GoToInstr(ObjDesc(obj.type, obj.color))
+            if self.training:
+                if obj.type == 'key':
+                    self.instrs = GoToInstr(ObjDesc(obj.type, obj.color))
+                else:
+                    self.instrs = GoToInstr(ObjDesc(obj.type))
             else:
-                self.instrs = GoToInstr(ObjDesc(obj.type))
+                self.instrs = GoToInstr(ObjDesc(obj.type, obj.color))
         else:
             self.instrs = PickupInstr(ObjDesc(obj.type, obj.color))
 
