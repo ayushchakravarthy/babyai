@@ -47,6 +47,8 @@ parser.add_argument("--save-interval", type=int, default=50,
                     help="number of updates between two saves (default: 50, 0 means no saving)")
 parser.add_argument("--finetune-transformer", action="store_true", default=False,
                     help="enable finetuning of the transformer")
+parser.add_argument("--episodes", type=int, default=int(1e9),
+                    help="maximum number of episodes to train")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -129,7 +131,8 @@ if os.path.exists(status_path):
 else:
     status = {'i': 0,
               'num_episodes': 0,
-              'num_frames': 0}
+              'num_frames': 0,
+              'patience': 0}
 
 # Define logger and Tensorboard writer and CSV writer
 
@@ -179,7 +182,10 @@ total_start_time = time.time()
 best_success_rate = 0
 best_mean_return = 0
 test_env_name = args.env
-while status['num_frames'] < args.frames:
+while status['num_frames'] < args.frames and status['num_episodes'] < args.episodes:
+    if status['patience'] > args.patience:
+        break
+
     # Update parameters
 
     update_start_time = time.time()
@@ -246,9 +252,12 @@ while status['num_frames'] < args.frames:
             best_mean_return = mean_return
             save_model = True
         if save_model:
+            status['patience'] = 0
             utils.save_model(acmodel, args.model + '_best')
             if obss_preprocessor.vocab is not None:
                 obss_preprocessor.vocab.save(utils.get_vocab_path(args.model + '_best'))
             logger.info("Return {: .2f}; success {: .2f}; best model is saved".format(mean_return, success_rate))
         else:
             logger.info("Return {: .2f}; success {: .2f}; not the best model; not saved".format(mean_return, success_rate))
+            status['patience'] += 1
+            logger.info("Losing patience, new value={}, limit={}".format(status['patience'], args.patience))
