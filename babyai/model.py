@@ -56,16 +56,14 @@ class ImageBOWEmbedding(nn.Module):
 
    def forward(self, inputs):
        offsets = torch.Tensor([0, self.max_value, 2 * self.max_value]).to(inputs.device)
-       print(self.embedding)
        inputs = (inputs + offsets[None, :, None, None]).long()
        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
 
 
 class ImageBOWEmbeddingPretrained(nn.Module):
-    def __init__(self, pretrained_model, max_value, embedding_dim):
+    def __init__(self, pretrained_model):
         super().__init__()
         self.embedding = pretrained_model.get_input_embeddings()
-        embedding_reshaped = torch.reshape(self.embedding, (3 * max_value, embedding_dim))
         # self.apply(initialize_parameters)
 
     def forward(self, inputs):
@@ -109,9 +107,8 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 raise ValueError("Transformers cannot be used when instructions are disabled")
             use_transformer = True
             self.instr_dim = 128
-            configuration = transformers.DistilBertConfig(dim=128, n_heads=8)
             if finetune_transformer:
-                self.instr_rnn = transformers.DistilBertModel(configuration).from_pretrained('distilbert-base-uncased')
+                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
             else:
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
@@ -122,7 +119,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         self.image_conv = nn.Sequential(*[
             *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
-            *([ImageBOWEmbeddingPretrained(self.instr_rnn, obs_space['image'], 128)] if use_transformer and not pixel else []),
+            *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if use_transformer and not pixel else []),
             *([nn.Conv2d(
                 in_channels=3, out_channels=128, kernel_size=(8, 8),
                 stride=8, padding=0)] if pixel else []),
