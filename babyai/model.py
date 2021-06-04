@@ -56,25 +56,29 @@ class ImageBOWEmbedding(nn.Module):
 
    def forward(self, inputs):
        offsets = torch.Tensor([0, self.max_value, 2 * self.max_value]).to(inputs.device)
+       print(self.embedding)
        inputs = (inputs + offsets[None, :, None, None]).long()
        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
 
 
 class ImageBOWEmbeddingPretrained(nn.Module):
-    def __init__(self, pretrained_model):
+    def __init__(self, pretrained_model, max_value, embedding_dim):
         super().__init__()
         self.embedding = pretrained_model.get_input_embeddings()
+        embedding_reshaped = torch.reshape(self.embedding, (3 * max_value, embedding_dim))
         # self.apply(initialize_parameters)
 
     def forward(self, inputs):
-        return self.embedding(inputs).sum(1)
+        inputs = inputs.to(torch.long)
+        print(self.embedding)
+        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
 
 
 class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
                  image_dim=128, memory_dim=128, instr_dim=128,
                  use_instr=False, lang_model="gru", use_memory=False,
-                 arch="bow_endpool_res", aux_info=None):
+                 arch="bow_endpool_res", aux_info=None, finetune_transformer = False):
         super().__init__()
 
         endpool = 'endpool' in arch
@@ -97,16 +101,19 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'transformer']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
         if self.lang_model == 'transformer':
             if not self.use_instr:
                 raise ValueError("Transformers cannot be used when instructions are disabled")
             use_transformer = True
-            self.instr_dim = 768
-            # maybe we should allow for model finetuning during training?
-            self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
+            self.instr_dim = 128
+            configuration = transformers.DistilBertConfig(dim=128, n_heads=8)
+            if finetune_transformer:
+                self.instr_rnn = transformers.DistilBertModel(configuration).from_pretrained('distilbert-base-uncased')
+            else:
+                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
         else:
             use_transformer = False
@@ -115,7 +122,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         self.image_conv = nn.Sequential(*[
             *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
-            *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if use_transformer and not pixel else []),
+            *([ImageBOWEmbeddingPretrained(self.instr_rnn, obs_space['image'], 128)] if use_transformer and not pixel else []),
             *([nn.Conv2d(
                 in_channels=3, out_channels=128, kernel_size=(8, 8),
                 stride=8, padding=0)] if pixel else []),
@@ -259,8 +266,10 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             # have equal length along dimension 1.
             mask = mask[:, :instr_embedding.shape[1]]
             instr_embedding = instr_embedding[:, :mask.shape[1]]
+            print(mask.shape, instr_embedding.shape)
 
             keys = self.memory2key(memory)
+            print(keys[:, None, :].shape)
             pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
             attention = F.softmax(pre_softmax, dim=1)
             instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
