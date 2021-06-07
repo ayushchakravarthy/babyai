@@ -472,7 +472,7 @@ class LevelGen(RoomGridLevel):
 level_dict = OrderedDict()
 
 
-def register_levels(module_name, globals):
+def register_levels(module_name, globals, prefix = 'BabyAI'):
     """
     Register OpenAI gym environments for all levels in a file
     """
@@ -486,7 +486,7 @@ def register_levels(module_name, globals):
         level_class = globals[global_name]
 
         # Register the levels with OpenAI Gym
-        gym_id = 'BabyAI-%s-v0' % (level_name)
+        gym_id = '%s-%s-v0' % (prefix, level_name)
         entry_point = '%s:%s' % (module_name, global_name)
         gym.envs.registration.register(
             id=gym_id,

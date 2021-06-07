@@ -226,4 +226,4 @@ class Level_PickupGotoLocalColorSplitsTest(Level_PickupGotoLocalColorSplits):
 
 
 # Register the levels in this file
-register_levels(__name__, globals())
+register_levels(__name__, globals(), prefix = 'Embodiment')
