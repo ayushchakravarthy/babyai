@@ -197,32 +197,123 @@ class Level_PickupLocalColorSplitsBaseline(ColorSplitsBase):
         else:
             self.instrs = PickupInstr(ObjDesc(obj.type))
 
-class Level_PickupGotoLocalColorSplits(ColorSplitsBase):
-    def __init__(self, room_size=8, num_dists=8, seed=None, training = True):
-        self.rng = np.random.default_rng()
-        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = training)
+class ShapeColorGeneralizationBase(RoomGridLevel):
+    def __init__(self, room_size=8, num_dists=8, seed=None, training = True, splits = None, baseinstr = GoToInstr, geninstr = lambda desc: PickupInstr(desc, strict = True), **kwargs):
+        self.num_dists = num_dists
+        self.training = training
+        self.baseinstr = baseinstr
+        self.geninstr = geninstr
 
-    def gen_mission(self):
-        mode = self.rng.choice(['Goto', 'Pickup'])
-        self.place_agent()
-        objs = self.add_distractors(num_distractors=self.num_dists, all_unique=False)
+        self.all_shapes = {'key', 'ball', 'box'}
+
+        self.splits = splits
+        if splits == 'color':
+            self.common_shapes = set()
+        elif splits == 'shape':
+            self.common_shapes = {'key'}
+        else:
+            raise ValueError('Must be either color or shape generalization')
+
+        super().__init__(
+            num_rows=1,
+            num_cols=1,
+            room_size=room_size,
+            seed=seed,
+            **kwargs
+        )
+
+    def add_distractors(self, i=None, j=None, num_distractors=10, all_unique=True, guaranteed_shapes = []):
+        """
+        Add random objects, with at least one object has one of the guaranteed shapes
+        """
+        COLOR_NAMES = list(COLORS.keys())
+
+        # Collect a list of existing objects
+        objs = []
+        for row in self.room_grid:
+            for room in row:
+                for obj in room.objs:
+                    objs.append((obj.type, obj.color))
+
+        # List of distractors added
+        dists = []
+
+        guaranteed = False
+        while len(dists) < num_distractors:
+            color = self._rand_elem(COLOR_NAMES)
+            if not guaranteed and len(guaranteed_shapes) > 0:
+                objtype = self._rand_elem(guaranteed_shapes)
+                guaranteed = True
+            else:                
+                objtype = self._rand_elem(list(self.all_shapes))
+            obj = (objtype, color)
+
+            if all_unique and obj in objs:
+                continue
+
+            # Add the object to a random room if no room specified
+            room_i = i
+            room_j = j
+            if room_i == None:
+                room_i = self._rand_int(0, self.num_cols)
+            if room_j == None:
+                room_j = self._rand_int(0, self.num_rows)
+
+            dist, pos = self.add_object(room_i, room_j, *obj)
+
+            objs.append(obj)
+            dists.append(dist)
+
+        return dists
+
+    def add_shapes_select_target(self, exclude_shapes = set()):
+        objs = self.add_distractors(num_distractors=self.num_dists, all_unique=False, guaranteed_shapes = list(self.all_shapes - exclude_shapes))
         self.check_objs_reachable()
         obj = self._rand_elem(objs)
-        if mode == 'Goto':
-            if self.training:
-                if obj.type == 'key':
-                    self.instrs = GoToInstr(ObjDesc(obj.type, obj.color))
-                else:
-                    self.instrs = GoToInstr(ObjDesc(obj.type))
+        while obj.type in exclude_shapes:
+            obj = self._rand_elem(objs)
+
+        return obj
+
+    def gen_mission(self):
+        self.place_agent()
+
+        if self.training:
+            mode = self.np_random.choice(['base', 'gen'])
+
+            if mode == 'gen':
+                if self.splits == 'color':
+                    obj = self.add_shapes_select_target()
+                    self.instrs = self.geninstr(ObjDesc(type = None, color = obj.color))
+                elif self.splits == 'shape':
+                    obj = self.add_shapes_select_target(self.all_shapes - self.common_shapes)
+                    self.instrs = self.geninstr(ObjDesc(obj.type))
             else:
-                self.instrs = GoToInstr(ObjDesc(obj.type, obj.color))
+                obj = self.add_shapes_select_target()
+                self.instrs = self.baseinstr(ObjDesc(obj.type))
         else:
-            self.instrs = PickupInstr(ObjDesc(obj.type, obj.color))
+            obj = self.add_shapes_select_target(self.common_shapes)
+            self.instrs = self.geninstr(ObjDesc(obj.type))
 
 
-class Level_PickupGotoLocalColorSplitsTest(Level_PickupGotoLocalColorSplits):
+class Level_PickupGotoLocalColorSplits(ShapeColorGeneralizationBase):
     def __init__(self, room_size=8, num_dists=8, seed=None):
-        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, training = False)
+        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, splits = 'color', training = True)
+
+
+class Level_PickupGotoLocalColorSplitsTest(ShapeColorGeneralizationBase):
+    def __init__(self, room_size=8, num_dists=8, seed=None):
+        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, splits = 'color', training = False)
+
+
+class Level_PickupGotoLocalShapeSplits(ShapeColorGeneralizationBase):
+    def __init__(self, room_size=8, num_dists=8, seed=None):
+        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, splits = 'shape', training = True)
+
+
+class Level_PickupGotoLocalShapeSplitsTest(ShapeColorGeneralizationBase):
+    def __init__(self, room_size=8, num_dists=8, seed=None):
+        super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, splits = 'shape', training = False)
 
 
 # Register the levels in this file
