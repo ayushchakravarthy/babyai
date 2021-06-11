@@ -67,9 +67,7 @@ class ImageBOWEmbeddingPretrained(nn.Module):
         # self.apply(initialize_parameters)
 
     def forward(self, inputs):
-        inputs = inputs.to(torch.long)
-        print(self.embedding)
-        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
+        return self.embedding(inputs.long()).sum(1).permute(0, 3, 1, 2)
 
 
 class ACModel(nn.Module, babyai.rl.RecurrentACModel):
@@ -124,7 +122,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 in_channels=3, out_channels=128, kernel_size=(8, 8),
                 stride=8, padding=0)] if pixel else []),
             nn.Conv2d(
-                in_channels=128 if use_bow or pixel else 768 if use_transformer else 3, out_channels=128,
+                in_channels=128 if (use_bow and not use_transformer) or pixel else 768 if use_transformer else 3, out_channels=128,
                 kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
