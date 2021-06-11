@@ -78,8 +78,9 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         super().__init__()
 
         endpool = 'endpool' in arch
-        use_bow = 'bow' in arch
-        pixel = 'pixel' in arch
+        self.use_bow = 'bow' in arch
+        self.pixel = 'pixel' in arch
+        self.fusion = 'fusion' in arch
         self.res = 'res' in arch
 
         # Decide which components are enabled
@@ -103,7 +104,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         if self.lang_model == 'transformer':
             if not self.use_instr:
                 raise ValueError("Transformers cannot be used when instructions are disabled")
-            use_transformer = True
+            self.use_transformer = True
             self.instr_dim = 128
             if finetune_transformer:
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
@@ -111,28 +112,76 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
         else:
-            use_transformer = False
-        print(self.lang_model)
+            self.use_transformer = False
 
+        if not self.fusion:
+            self.image_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if self.use_transformer and not self.pixel else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if (self.use_bow and not self.use_transformer) or self.pixel else 768 if self.use_transformer else 3, out_channels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
+            ])
+            self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
+        else:
+            if not use_instr:
+                raise ValueError("Fusion can only be used when instructions are enabled")
+            
+            # pre-trained transformer not implemented
+            self.image_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if self.use_bow or self.pixel else 3, out_channels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                # *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU()
+                # *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
+            ])
 
-        self.image_conv = nn.Sequential(*[
-            *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
-            *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if use_transformer and not pixel else []),
-            *([nn.Conv2d(
-                in_channels=3, out_channels=128, kernel_size=(8, 8),
-                stride=8, padding=0)] if pixel else []),
-            nn.Conv2d(
-                in_channels=128 if (use_bow and not use_transformer) or pixel else 768 if use_transformer else 3, out_channels=128,
-                kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
-        ])
-        self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
+            
+            self.w_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if self.use_bow or self.pixel else 3, out_chanels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=128, out_channels=2, kernel_size=(3, 3), padding=1)
+                # *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
+            ])
+           
+            self.combined_conv = nn.Sequential(*[
+                nn.Conv2d(in_channels=256, out_channels=128, kernel_size=(2, 2)),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=(2, 2), stride=2),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(2, 2)),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(2, 2)),
+                nn.ReLU()
+            ])
 
         # Define instruction embedding
         if self.use_instr:
@@ -242,6 +291,12 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         return self.memory_dim
 
     def forward(self, obs, memory, instr_embedding=None, probe_attention = False):
+
+        print(self.use_transformer)
+        print(self.use_bow)
+        print(self.pixel)
+
+        print(128 if (self.use_bow and not self.use_transformer) or self.pixel else 768 if self.use_transformer else 3)
         if self.use_instr and instr_embedding is None:
             instr_embedding = self._get_instr_embedding(obs.instr)
         if self.use_instr and self.lang_model in {"attgru", "transformer"}:
@@ -261,10 +316,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             # have equal length along dimension 1.
             mask = mask[:, :instr_embedding.shape[1]]
             instr_embedding = instr_embedding[:, :mask.shape[1]]
-            print(mask.shape, instr_embedding.shape)
-
             keys = self.memory2key(memory)
-            print(keys[:, None, :].shape)
             pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
             attention = F.softmax(pre_softmax, dim=1)
             instr_embedding = (instr_embedding * attention[:, :, None]).sum(1)
