@@ -291,12 +291,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         return self.memory_dim
 
     def forward(self, obs, memory, instr_embedding=None, probe_attention = False):
-
-        print(self.use_transformer)
-        print(self.use_bow)
-        print(self.pixel)
-
-        print(128 if (self.use_bow and not self.use_transformer) or self.pixel else 768 if self.use_transformer else 3)
         if self.use_instr and instr_embedding is None:
             instr_embedding = self._get_instr_embedding(obs.instr)
         if self.use_instr and self.lang_model in {"attgru", "transformer"}:
