@@ -105,7 +105,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             if not self.use_instr:
                 raise ValueError("Transformers cannot be used when instructions are disabled")
             self.use_transformer = True
-            self.instr_dim = 128
+            self.instr_dim = 768
             if finetune_transformer:
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
             else:
