@@ -316,5 +316,92 @@ class Level_PickupGotoLocalShapeSplitsTest(ShapeColorGeneralizationBase):
         super().__init__(room_size=room_size, num_dists=num_dists, seed=seed, splits = 'shape', training = False)
 
 
+class Level_PutNextLocalShapeSplits(RoomGridLevel):
+    """
+    Put an object next to another object, inside a single room
+    with no doors, no distractors
+    """
+
+    def __init__(self, room_size=8, num_objs=8, seed=None, training = True):
+        if training:
+            self.o1types = {'box', 'ball'}
+            self.o2types = {'key'}
+        else:
+            self.o1types = {'key'}
+            self.o2types = {'box', 'ball'}
+
+        self.all_shapes = self.o1types | self.o2types
+
+        self.num_objs = num_objs
+        super().__init__(
+            num_rows=1,
+            num_cols=1,
+            room_size=room_size,
+            seed=seed
+        )
+
+    def add_distractors(self, i=None, j=None, num_distractors=10, all_unique=True, guaranteed_shapes = []):
+        """
+        Add random objects, with at least one object has for each of the guaranteed shapes
+        """
+        COLOR_NAMES = list(COLORS.keys())
+
+        # Collect a list of existing objects
+        objs = []
+        for row in self.room_grid:
+            for room in row:
+                for obj in room.objs:
+                    objs.append((obj.type, obj.color))
+
+        # List of distractors added
+        dists = []
+
+        while len(dists) < num_distractors:
+            color = self._rand_elem(COLOR_NAMES)
+            if len(guaranteed_shapes) > 0:
+                objtype = guaranteed_shapes.pop()
+            else:                
+                objtype = self._rand_elem(list(self.all_shapes))
+            obj = (objtype, color)
+
+            if all_unique and obj in objs:
+                continue
+
+            # Add the object to a random room if no room specified
+            room_i = i
+            room_j = j
+            if room_i == None:
+                room_i = self._rand_int(0, self.num_cols)
+            if room_j == None:
+                room_j = self._rand_int(0, self.num_rows)
+
+            dist, pos = self.add_object(room_i, room_j, *obj)
+
+            objs.append(obj)
+            dists.append(dist)
+
+        return dists
+
+    def gen_mission(self):
+        self.place_agent()
+        objs = self.add_distractors(num_distractors=self.num_objs, all_unique=True, guaranteed_shapes = ['key', 'box', 'ball'])
+        self.check_objs_reachable()
+        o1, o2 = self._rand_subset(objs, 2)
+        while o1.type not in self.o1types:
+            o1 = self._rand_elem(objs)
+        while o2.type not in self.o2types or o1 == o2:
+            o2 = self._rand_elem(objs)
+
+        self.instrs = PutNextInstr(
+            ObjDesc(o1.type, o1.color),
+            ObjDesc(o2.type, o2.color)
+        )
+
+
+class Level_PutNextLocalShapeSplits(Level_PutNextLocalShapeSplits):
+    def __init__(self, room_size=8, num_objs=8, seed=None):
+        super().__init__(room_size=room_size, num_objs = num_objs, seed=seed, training = False)
+
+
 # Register the levels in this file
 register_levels(__name__, globals(), prefix = 'Embodiment')

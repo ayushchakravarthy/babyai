@@ -49,6 +49,8 @@ parser.add_argument("--finetune-transformer", action="store_true", default=False
                     help="enable finetuning of the transformer")
 parser.add_argument("--episodes", type=int, default=int(1e9),
                     help="maximum number of episodes to train")
+parser.add_argument("--warmup", type=int, default=100,
+                    help="number of initial validations to not lose patience")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -132,7 +134,8 @@ else:
     status = {'i': 0,
               'num_episodes': 0,
               'num_frames': 0,
-              'patience': 0}
+              'patience': 0,
+              'warmup': 0}
 
 # Define logger and Tensorboard writer and CSV writer
 
@@ -259,5 +262,9 @@ while status['num_frames'] < args.frames and status['num_episodes'] < args.episo
             logger.info("Return {: .2f}; success {: .2f}; best model is saved".format(mean_return, success_rate))
         else:
             logger.info("Return {: .2f}; success {: .2f}; not the best model; not saved".format(mean_return, success_rate))
-            status['patience'] += 1
-            logger.info("Losing patience, new value={}, limit={}".format(status['patience'], args.patience))
+            if status['warmup'] < args.warmup:
+                status['warmup'] += 1
+                logger.info('Warm up step {:d}/{:d}, not losing patience'.format(status['warmup'], args.warmup))
+            else:
+                status['patience'] += 1
+                logger.info("Losing patience, new value={}, limit={}".format(status['patience'], args.patience))
