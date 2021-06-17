@@ -142,7 +142,7 @@ header = (["update", "episodes", "frames", "FPS", "duration"]
           + ["num_frames_" + stat for stat in ['mean', 'std', 'min', 'max']]
           + ["entropy", "value", "policy_loss", "value_loss", "loss", "grad_norm"])
 if args.tb:
-    from tensorboardX import SummaryWriter
+    from torch.utils.tensorboard import SummaryWriter
 
     writer = SummaryWriter(utils.get_log_dir(args.model))
 csv_path = os.path.join(utils.get_log_dir(args.model), 'log.csv')
