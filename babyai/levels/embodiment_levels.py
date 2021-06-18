@@ -398,7 +398,7 @@ class Level_PutNextLocalShapeSplits(RoomGridLevel):
         )
 
 
-class Level_PutNextLocalShapeSplits(Level_PutNextLocalShapeSplits):
+class Level_PutNextLocalShapeSplitsTest(Level_PutNextLocalShapeSplits):
     def __init__(self, room_size=8, num_objs=8, seed=None):
         super().__init__(room_size=room_size, num_objs = num_objs, seed=seed, training = False)
 
