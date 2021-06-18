@@ -379,7 +379,7 @@ class ImitationLearning(object):
         utils.save_model(self.acmodel, self.args.model)
 
         # best mean return to keep track of performance on validation set
-        best_success_rate, patience, i = 0, 0, 0
+        best_success_rate, best_accuracy, patience, i = 0, 0, 0, 0
         total_start_time = time.time()
 
         epoch_length = self.args.epoch_length
@@ -440,8 +440,7 @@ class ImitationLearning(object):
 
                 valid_log = self.validate(self.args.val_episodes)
                 mean_return = [np.mean(log['return_per_episode']) for log in valid_log]
-                success_rate = [np.mean([1 if r > 0 else 0 for r in log['return_per_episode']]) for log in
-                                valid_log]
+                success_rate = [np.mean([1 if r > 0 else 0 for r in log['return_per_episode']]) for log in valid_log]
 
                 val_log = self.run_epoch_recurrence(self.val_demos)
                 validation_accuracy = np.mean(val_log["accuracy"])
@@ -459,8 +458,9 @@ class ImitationLearning(object):
                     csv_writer.writerow(train_data + validation_data)
 
                 # In case of a multi-env, the update condition would be "better mean success rate" !
-                if np.mean(success_rate) > best_success_rate:
+                if np.mean(success_rate) > best_success_rate or validation_accuracy > best_accuracy:
                     best_success_rate = np.mean(success_rate)
+                    best_accuracy = validation_accuracy
                     status['patience'] = 0
                     with open(status_path, 'w') as dst:
                         json.dump(status, dst)
