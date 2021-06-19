@@ -6,6 +6,7 @@ from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import babyai.rl
 from babyai.rl.utils.supervised_losses import required_heads
+from babyai.layers import Encoder, Gate, clones, ReAttention
 import transformers
 
 
@@ -17,6 +18,25 @@ def initialize_parameters(m):
         m.weight.data *= 1 / torch.sqrt(m.weight.data.pow(2).sum(1, keepdim=True))
         if m.bias is not None:
             m.bias.data.fill_(0)
+
+
+# General Idea inspired by MDETR from https://arxiv.org/pdf/2104.12763v1.pdf
+class MDETR(nn.Module):
+    def __init__(self, in_features, out_features, in_channels, imm_channels):
+        super().__init__()
+        # Convolutional Network
+        self.conv1 = nn.Conv2d(
+            in_channels=in_channels, out_channels=imm_channels,
+            kernel_size=(3, 3), padding=1)
+        self.bn1 = nn.BatchNorm2d(imm_channels)
+        self.conv2 = nn.Conv2d(
+            in_channels=imm_channels, out_channels=out_features,
+            kernel_size=(3, 3), padding=1)
+        self.bn2 = nn.BatchNorm2d(out_features)
+
+
+        # Multi-head self attention
+
 
 
 # Inspired by FiLMedBlock from https://arxiv.org/abs/1709.07871
@@ -82,6 +102,8 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.pixel = 'pixel' in arch
         self.fusion = 'fusion' in arch
         self.res = 'res' in arch
+        self.use_attention = 'attention' in arch
+        use_film = not (self.fusion and self.attention)
 
         # Decide which components are enabled
         self.use_instr = use_instr
@@ -98,7 +120,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'fusion', 'attention', 'film']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
         if self.lang_model == 'transformer':
@@ -114,7 +136,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         else:
             self.use_transformer = False
 
-        if not self.fusion:
+        if use_film:
             self.image_conv = nn.Sequential(*[
                 *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
                 *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if self.use_transformer and not self.pixel else []),
@@ -133,7 +155,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
             ])
             self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
-        else:
+        elif self.fusion:
             if not use_instr:
                 raise ValueError("Fusion can only be used when instructions are enabled")
             
@@ -162,7 +184,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                     in_channels=3, out_channels=128, kernel_size=(8, 8),
                     stride=8, padding=0)] if self.pixel else []),
                 nn.Conv2d(
-                    in_channels=128 if self.use_bow or self.pixel else 3, out_chanels=128,
+                    in_channels=128 if self.use_bow or self.pixel else 3, out_channels=128,
                     kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
                 nn.BatchNorm2d(128),
                 nn.ReLU(),
@@ -182,6 +204,20 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(2, 2)),
                 nn.ReLU()
             ])
+        elif self.use_attention:
+            self.image_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if self.use_bow or self.pixel else 3, out_channels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU()
+            ])
+        else:
+            raise ValueError("Incorrect Architecture name: {}".format(arch))
 
         # Define instruction embedding
         if self.use_instr:
@@ -206,16 +242,27 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
             if self.lang_model in ['attgru', 'transformer']:
                 self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
-
-            num_module = 2
-            self.controllers = []
-            for ni in range(num_module):
-                mod = FiLM(
-                    in_features=self.final_instr_dim,
-                    out_features=128 if ni < num_module-1 else self.image_dim,
-                    in_channels=128, imm_channels=128)
-                self.controllers.append(mod)
-                self.add_module('FiLM_' + str(ni), mod)
+              
+            if use_film or self.fusion:
+                num_module = 2
+                self.controllers = []
+                for ni in range(num_module):
+                    mod = FiLM(
+                        in_features=self.final_instr_dim,
+                        out_features=128 if ni < num_module-1 else self.image_dim,
+                        in_channels=128, imm_channels=128)
+                    self.controllers.append(mod)
+                    self.add_module('FiLM_' + str(ni), mod)
+        if self.use_attention:
+            self.encoder = Encoder(self.instr_dim, 4, 9, self.image_dim, self.image_dim)
+            self.gates = clones(Gate(4, self.image_dim, self.image_dim), 3)
+            self.post_cnn = nn.Sequential(*[
+                nn.Conv2d(128, 128, kernel_size=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=7, stride=7)
+            ])
+            self.reattention = ReAttention(4, 128, 128)
 
         # Define memory and resize image embedding
         self.embedding_size = self.image_dim
@@ -319,14 +366,39 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         if 'pixel' in self.arch:
             x /= 256.0
-        x = self.image_conv(x)
-        if self.use_instr:
+
+        if not self.fusion:
+            x = self.image_conv(x)
+        else:
+            x_feat = self.image_conv(x)
+            w = self.w_conv(x)
+            N, _, W, H = w.shape
+            w = w.view([N, 2, -1])
+            w = F.softmax(w, dim=1)
+            y = torch.matmul(instr_embedding.T, w[:,:-1]).view([N, 128, W, H])
+
+            x = torch.cat([x_feat, y], axis=1)
+            x = self.combined_conv(x)
+            x = x.view(x.shape[0], x.shape[1], 1, 1)
+
+        if self.use_instr and not self.use_attention:
             for controller in self.controllers:
                 out = controller(x, instr_embedding)
                 if self.res:
                     out += x
                 x = out
-        x = F.relu(self.film_pool(x))
+            x = F.relu(self.film_pool(x))
+        
+        if self.use_attention:
+            instr_encoded = self.encoder(instr_embedding, t=1)
+
+            module_outputs = []
+            for t in range(3):
+                x = self.gates[t](x.permute(0, 2, 3, 1), instr_encoded, t)
+                module_outputs.append(x)
+            x = self.reattention(module_outputs, instr_encoded)
+            x = self.post_cnn(x)
+
         x = x.reshape(x.shape[0], -1)
 
         if self.use_memory:
