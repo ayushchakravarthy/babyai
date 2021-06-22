@@ -96,18 +96,18 @@ def initialize_parameters(m):
             m.bias.data.fill_(0)
 
 class Encoder(nn.Module):
-    def __init__(self,d_model,h,seq_len,in_channels,out_channels):
+    def __init__(self, d_model, h, seq_len, in_channels, out_channels):
         super().__init__()
-        self.position_encoding = PositionalEncoding(d_model,dropout=0.0)
-        self.multi_head = MultiHeadedAttention(h,d_model,dropout=0.0)
-        self.transition = nn.Linear(in_channels,out_channels)
+        self.position_encoding = PositionalEncoding(d_model, dropout=0.0)
+        self.multi_head = MultiHeadedAttention(h, d_model, dropout=0.0)
+        self.transition = nn.Linear(in_channels, out_channels)
         self.layer_norm = LayerNorm(torch.Size([d_model]))
         self.apply(initialize_parameters)
 
     def forward(self,x,t):
         x = self.position_encoding(x)
         for _ in range(t):
-            mh = self.multi_head(x,x,x)
+            mh = self.multi_head(x, x, x)
             x = x + mh
             norm = self.layer_norm(x)
 
@@ -118,7 +118,7 @@ class Encoder(nn.Module):
         return x
 
 class Gate(nn.Module):
-    def __init__(self,h,in_channels,out_channels):
+    def __init__(self, h, in_channels, out_channels):
         super().__init__()
         self.transition = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
@@ -126,31 +126,31 @@ class Gate(nn.Module):
             nn.BatchNorm2d(in_channels),
             nn.ReLU(),
         )
-        self.multihead = MultiHeadedAttention(h,out_channels)
+        self.multihead = MultiHeadedAttention(h, out_channels)
         # self.layer_norm = [
         #     nn.LayerNorm(torch.Size([8,8,out_channels])),
         #     nn.LayerNorm(torch.Size([4,4,out_channels])),
         #     nn.LayerNorm(torch.Size([2,2,out_channels])),
         # ]
-        self.layer_norm = nn.LayerNorm(torch.Size([7,7,out_channels]))
+        self.layer_norm = nn.LayerNorm(torch.Size([7, 7, out_channels]))
 
 
-    def forward(self,obs,instr,t):
-        x = self.multihead(obs,instr,instr)
-        x = x.view(x.size(0),obs.size(1),obs.size(2),x.size(-1))
+    def forward(self, obs, instr, t):
+        x = self.multihead(obs, instr, instr)
+        x = x.view(x.size(0), obs.size(1), obs.size(2), x.size(-1))
         x = self.layer_norm(x)
         x = x + obs
-        x = x.permute(0,3,1,2)
+        x = x.permute(0, 3, 1, 2)
         x = self.transition(x)
 
         return x
 
 
 class ReAttention(nn.Module):
-    def __init__(self,h,in_channels,out_channels):
+    def __init__(self, h, in_channels, out_channels):
         super().__init__()
-        self.attention = MultiHeadedAttention(h,out_channels)
-        self.layer_norm = nn.LayerNorm(torch.Size([7,7,out_channels]))
+        self.attention = MultiHeadedAttention(h, out_channels)
+        self.layer_norm = nn.LayerNorm(torch.Size([7, 7, out_channels]))
         self.transition = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
             kernel_size=(3, 3), padding=1),
@@ -176,12 +176,12 @@ class ReAttention(nn.Module):
         att2 = self.att(dec2, out, out)
         att3 = self.att(dec3, out, out)
 
-        alpha1 = torch.sigmoid(self.linears[0](torch.cat([dec1, att1],-1)))
-        alpha2 = torch.sigmoid(self.linears[1](torch.cat([dec2, att2],-1)))
-        alpha3 = torch.sigmoid(self.linears[2](torch.cat([dec3, att3],-1)))
+        alpha1 = torch.sigmoid(self.linears[0](torch.cat([dec1, att1], -1)))
+        alpha2 = torch.sigmoid(self.linears[1](torch.cat([dec2, att2], -1)))
+        alpha3 = torch.sigmoid(self.linears[2](torch.cat([dec3, att3], -1)))
 
-        outs = (alpha1*att1+alpha2*att2+alpha3*att3)/math.sqrt(3)
-        outs = self.transition(outs.permute(0,3,1,2))
+        outs = (alpha1 * att1 + alpha2 * att2 + alpha3 * att3) / math.sqrt(3)
+        outs = self.transition(outs.permute(0, 3, 1, 2))
 
         return outs
 
@@ -193,3 +193,70 @@ class ReAttention(nn.Module):
         out = out + query
 
         return out
+
+class ConvolutionalNet(nn.Module):
+    """Simple conv. nt. convolves the input channel but retains input image width."""
+    def __init__(
+        self,
+        num_channels: int,
+        cnn_kernel_size: int, 
+        num_conv_channels: int,
+        dropout_probability: float,
+        stride=1):
+        super(ConvolutionalNet, self).__init__()
+        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=1,
+                                padding=0, stride=stride)
+        self.conv_2 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=5,
+                                stride=stride, padding=2)
+        self.conv_3 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=cnn_kernel_size,
+                                stride=stride, padding=cnn_kernel_size // 2)
+        self.dropout = nn.Dropout(p=dropout_probability)
+        self.relu = nn.ReLU()
+        layers = [self.relu, self.dropout]
+        self.layers = nn.Sequential(*layers)
+        self.output_dimension = num_conv_channels * 3
+
+        def forward(self, input_images: torch.Tensor) -> torch.Tensor:
+            """
+            :param input_images: [batch_size, image_width, image_width, image_channels]
+            :return: [batch_size, image_width * image_width, num_conv_channels]
+            """
+            batch_size = input_images.size(0)
+            input_images = input_images.transpose(1, 3)
+            conved_1 = self.conv_1(input_images)
+            conved_2 = self.conv_2(input_images)
+            conved_3 = self.conv_3(input_images)
+            images_features = torch.cat([conved_1, conved_2, conved_3], dim=1)
+            _, num_channels, _, image_dimension = images_features.size()
+            images_features = images_features.transpose(1, 3)
+            images_features = self.layers(images_features)
+            return images_features.reshape(batch_size, image_dimension * image_dimension, num_channels)
+
+class DownSamplingConvolutionalNet(nn.Module):
+    """TODO: make more general and describe"""
+    def __init__(self, num_channels: int, num_conv_channels: int, dropout_probability: float):
+        super(DownSamplingConvolutionalNet, self).__init__()
+        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=5,
+                                stride=5)
+        self.conv_2 = nn.Conv2d(in_channels=num_conv_channels, out_channels=num_conv_channels, kernel_size=3,
+                                stride=3, padding=0)
+        self.conv_3 = nn.Conv2d(in_channels=num_conv_channels, out_channels=num_conv_channels, kernel_size=3,
+                                stride=3, padding=1)
+        self.dropout = nn.Dropout2d(dropout_probability)
+        self.relu = nn.ReLU()
+        layers = [self.conv_1, self.relu, self.dropout, self.conv_2, self.relu, self.dropout, self.conv_3,
+                  self.relu, self.dropout]
+        self.layers = nn.Sequential(*layers)
+        self.output_dimension = num_conv_channels * 3
+
+    def forward(self, input_images: torch.Tensor) -> torch.Tensor:
+        """
+        :param input_images: [batch_size, image_width, image_width, image_channels]
+        :return: [batch_size, 6 * 6, output_dim]
+        """
+        batch_size = input_images.size(0)
+        input_images = input_images.transpose(1, 3)
+        images_features = self.layers(input_images)
+        _, num_channels, _, image_dimension = images_features.size()
+        images_features = images_features.transpose(1, 3)
+        return images_features.reshape(batch_size, image_dimension, image_dimension, num_channels)
