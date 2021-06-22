@@ -470,7 +470,8 @@ class ImitationLearning(object):
                     if torch.cuda.is_available():
                         self.acmodel.cpu()
                     utils.save_model(self.acmodel, self.args.model + "_best")
-                    self.obss_preprocessor.vocab.save(utils.get_vocab_path(self.args.model + "_best"))
+                    if self.obss_preprocessor.vocab is not None:
+                        self.obss_preprocessor.vocab.save(utils.get_vocab_path(self.args.model + "_best"))
                     if torch.cuda.is_available():
                         self.acmodel.cuda()
                 else:
@@ -481,7 +482,8 @@ class ImitationLearning(object):
                 if torch.cuda.is_available():
                     self.acmodel.cpu()
                 utils.save_model(self.acmodel, self.args.model)
-                self.obss_preprocessor.vocab.save()
+                if self.obss_preprocessor.vocab is not None:
+                    self.obss_preprocessor.vocab.save()
                 if torch.cuda.is_available():
                     self.acmodel.cuda()
                 with open(status_path, 'w') as dst:
