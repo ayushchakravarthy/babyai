@@ -5,9 +5,11 @@ from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import babyai.rl
+import transformers
 from babyai.rl.utils.supervised_losses import required_heads
 from babyai.layers import Encoder, Gate, clones, ReAttention
-import transformers
+from babyai.layers import ConvolutionalNet
+from babyai.layers import EncoderRNN, Attention, LuongAttentionDecoderRNN, BahdanauAttentionDecoderRNN
 
 
 # From https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
@@ -18,25 +20,6 @@ def initialize_parameters(m):
         m.weight.data *= 1 / torch.sqrt(m.weight.data.pow(2).sum(1, keepdim=True))
         if m.bias is not None:
             m.bias.data.fill_(0)
-
-
-# General Idea inspired by MDETR from https://arxiv.org/pdf/2104.12763v1.pdf
-class MDETR(nn.Module):
-    def __init__(self, in_features, out_features, in_channels, imm_channels):
-        super().__init__()
-        # Convolutional Network
-        self.conv1 = nn.Conv2d(
-            in_channels=in_channels, out_channels=imm_channels,
-            kernel_size=(3, 3), padding=1)
-        self.bn1 = nn.BatchNorm2d(imm_channels)
-        self.conv2 = nn.Conv2d(
-            in_channels=imm_channels, out_channels=out_features,
-            kernel_size=(3, 3), padding=1)
-        self.bn2 = nn.BatchNorm2d(out_features)
-
-
-        # Multi-head self attention
-
 
 
 # Inspired by FiLMedBlock from https://arxiv.org/abs/1709.07871
@@ -474,3 +457,45 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         else:
             ValueError("Undefined instruction architecture: {}".format(self.use_instr))
+
+
+class gSCAN(nn.Module):
+    def __init__(self, input_vocab_size: int, embedding_dimension: int, encoder_hidden_size: int,
+                 num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
+                 encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
+                 decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
+                 cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
+                 target_eos_idx: int, output_directory: str, conditional_attention: bool,
+                 attention_type: str, **kwargs):
+        super(gSCAN, self).__init__()
+    
+        cnn_input_channels = num_cnn_channels
+
+        # Input: [batch_size, image_height, image_width, num_channels]
+        # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
+        self.situation_encoder = ConvolutionalNet(num_channels=cnn_input_channels,
+                                                 cnn_kernel_size=cnn_kernel_size,
+                                                 num_conv_channels=cnn_hidden_num_channels,
+                                                 dropout_probability=cnn_dropout_p)
+
+        
+        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
+        # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
+        self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
+                                          hidden_size=decoder_hidden_size)
+
+        # Input: [batch_size, max_input_length]
+        # Output: [batch_size, hidden_size], [batch_size, max_input_length, hidden_size]
+        self.encoder = EncoderRNN(input_size=input_vocab_size,
+                                  embedding_dim=embedding_dimension,
+                                  rnn_input_size=embedding_dimension,
+                                  hidden_size=encoder_hidden_size,
+                                  num_layers=num_encoder_layers,
+                                  dropout_probability=encoder_dropout_p,
+                                  bidirectional=encoder_bidirectional,
+                                  padding_idx=input_padding_idx)
+        # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
+        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+        self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
+
+                                        
