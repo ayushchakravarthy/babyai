@@ -231,8 +231,8 @@ class ConvolutionalNet(nn.Module):
         dropout_probability: float,
         stride=1):
         super(ConvolutionalNet, self).__init__()
-        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=1,
-                                padding=0, stride=stride)
+        self.conv_1 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=(3, 3),
+                                padding=1, stride=stride)
         self.conv_2 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=5,
                                 stride=stride, padding=2)
         self.conv_3 = nn.Conv2d(in_channels=num_channels, out_channels=num_conv_channels, kernel_size=cnn_kernel_size,
@@ -245,11 +245,10 @@ class ConvolutionalNet(nn.Module):
 
         def forward(self, input_images: torch.Tensor) -> torch.Tensor:
             """
-            :param input_images: [batch_size, image_width, image_width, image_channels]
+            :param input_images: [batch_size, image_channels, image_width, image_width]
             :return: [batch_size, image_width * image_width, num_conv_channels]
             """
             batch_size = input_images.size(0)
-            input_images = input_images.transpose(1, 3)
             conved_1 = self.conv_1(input_images)
             conved_2 = self.conv_2(input_images)
             conved_3 = self.conv_3(input_images)

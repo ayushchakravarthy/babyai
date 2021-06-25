@@ -41,8 +41,10 @@ class FiLM(nn.Module):
         self.apply(initialize_parameters)
 
     def forward(self, x, y):
+        print(x.transpose)
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.conv2(x)
+        print(x.shape)
         weight = self.weight(y).unsqueeze(2).unsqueeze(3)
         bias = self.bias(y).unsqueeze(2).unsqueeze(3)
         out = x * weight + bias
@@ -396,7 +398,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             extra_predictions = {info: self.extra_heads[info](embedding) for info in self.extra_heads}
         else:
             extra_predictions = dict()
-
+        print(embedding.shape)
         x = self.actor(embedding)
         dist = Categorical(logits=F.log_softmax(x, dim=1))
 
@@ -460,25 +462,25 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
 
 class gSCAN(nn.Module):
-    def __init__(self, input_vocab_size: int, embedding_dimension: int, encoder_hidden_size: int,
+    def __init__(self, obs_space, action_space, input_vocab_size: int, embedding_dimension: int, encoder_hidden_size: int,
                  num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
                  decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
                  cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
-                 target_eos_idx: int, output_directory: str, conditional_attention: bool,
-                 attention_type: str, **kwargs):
+                 target_eos_idx: int, output_directory: str, conditional_attention: bool, **kwargs):
         super(gSCAN, self).__init__()
     
-        cnn_input_channels = num_cnn_channels
+        self.obs_space = obs_space
 
-        # Input: [batch_size, image_height, image_width, num_channels]
+        # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
-        self.situation_encoder = ConvolutionalNet(num_channels=cnn_input_channels,
-                                                 cnn_kernel_size=cnn_kernel_size,
-                                                 num_conv_channels=cnn_hidden_num_channels,
-                                                 dropout_probability=cnn_dropout_p)
+        self.situation_encoder = ConvolutionalNet(num_channels=obs_space['image'],
+                                                 cnn_kernel_size=3,
+                                                 num_conv_channels=128,
+                                                 dropout_probability=0.5)
 
         
+        # TODO: Figure out how Attention input has to work and input and output for forward method
         # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
         self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
@@ -498,4 +500,29 @@ class gSCAN(nn.Module):
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
         self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
 
-                                        
+        # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
+        # Input for attention: [batch_size, max_input_length, hidden_size],
+        #                      [batch_size, image_width * image_width, hidden_size]
+        # Output: [max_target_length, batch_size, target_vocabulary_size]
+        self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
+                                                             output_size=target_vocabulary_size,
+                                                             num_layers=num_decoder_layers,
+                                                             dropout_probability=decoder_dropout_p,
+                                                             padding_idx=target_pad_idx,
+                                                             textual_attention=self.textual_attention,
+                                                             visual_attention=self.visual_attention,
+                                                             conditional_attention=conditional_attention)
+        # TODO: Have to set self.embedding_size                    
+        # Define actor's model
+        self.actor = nn.Sequential(
+            nn.Linear(self.embedding_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, action_space.n)
+        )
+
+        # Define critic's model
+        self.critic = nn.Sequential(
+            nn.Linear(self.embedding_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, 1)
+        )
