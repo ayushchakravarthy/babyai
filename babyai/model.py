@@ -41,10 +41,8 @@ class FiLM(nn.Module):
         self.apply(initialize_parameters)
 
     def forward(self, x, y):
-        print(x.transpose)
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.conv2(x)
-        print(x.shape)
         weight = self.weight(y).unsqueeze(2).unsqueeze(3)
         bias = self.bias(y).unsqueeze(2).unsqueeze(3)
         out = x * weight + bias
@@ -398,7 +396,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             extra_predictions = {info: self.extra_heads[info](embedding) for info in self.extra_heads}
         else:
             extra_predictions = dict()
-        print(embedding.shape)
+
         x = self.actor(embedding)
         dist = Categorical(logits=F.log_softmax(x, dim=1))
 
@@ -479,8 +477,6 @@ class gSCAN(nn.Module):
                                                  num_conv_channels=128,
                                                  dropout_probability=0.5)
 
-        
-        # TODO: Figure out how Attention input has to work and input and output for forward method
         # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
         self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
