@@ -39,7 +39,7 @@ def clones(module, N):
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
 
-    def __init__(self, d_model, dropout, max_len=64):
+    def __init__(self, d_model, dropout, max_len=256):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -54,7 +54,7 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False)
+        x = x + Variable(self.pe[:, x.size(1)], requires_grad=False)
         return self.dropout(x)
 
 class LayerNorm(nn.Module):
