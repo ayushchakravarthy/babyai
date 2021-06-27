@@ -423,14 +423,21 @@ class gSCAN(nn.Module):
 
         # Input: [batch_size, max_input_length]
         # Output: [batch_size, hidden_size], [batch_size, max_input_length, hidden_size]
-        self.encoder = EncoderRNN(input_size=input_vocab_size,
-                                  embedding_dim=embedding_dimension,
-                                  rnn_input_size=embedding_dimension,
-                                  hidden_size=encoder_hidden_size,
-                                  num_layers=num_encoder_layers,
-                                  dropout_probability=encoder_dropout_p,
-                                  bidirectional=encoder_bidirectional,
-                                  padding_idx=input_padding_idx)
+        # self.encoder = EncoderRNN(input_size=input_vocab_size,
+        #                           embedding_dim=embedding_dimension,
+        #                           rnn_input_size=embedding_dimension,
+        #                           hidden_size=encoder_hidden_size,
+        #                           num_layers=num_encoder_layers,
+        #                           dropout_probability=encoder_dropout_p,
+        #                           bidirectional=encoder_bidirectional,
+        #                           padding_idx=input_padding_idx)
+
+        # Instruction Encoder LSTM
+        self.word_embedding = nn.Embedding(obs_space["instr"], 128)
+        self.instr_rnn = nn.LSTM(
+            128, 64, batch_first=True,
+            bidirectional=True)
+        self.final_instr_dim = 128
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
         self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
@@ -461,3 +468,33 @@ class gSCAN(nn.Module):
             nn.Tanh(),
             nn.Linear(64, 1)
         )
+
+    def encode_input(self, instr):
+        lengths = (instr != 0).sum(1).long()
+        masks = (instr != 0).float()
+
+        if lengths.shape[0] > 1:
+            seq_lengths, perm_idx = lengths.sort(0, descending=True)
+            iperm_idx = torch.LongTensor(perm_idx.shape).fill_(0)
+            if instr.is_cuda: iperm_idx = iperm_idx.cuda()
+            for i, v in enumerate(perm_idx):
+                iperm_idx[v.data] = i
+
+            inputs = self.word_embedding(instr)
+            inputs = inputs[perm_idx]
+
+            inputs = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
+
+            outputs, (final_states, cell) = self.instr_rnn(inputs)
+        else:
+            instr = instr[:, 0:lengths[0]]
+            outputs, final_states = self.instr_rnn(self.word_embedding(instr))
+            iperm_idx = None
+        final_states = final_states.transpose(0, 1).contiguous()
+        final_states = final_states.view(final_states.shape[0], -1)
+        if iperm_idx is not None:
+            outputs, _ = pad_packed_sequence(outputs, batch_first=True)
+            outputs = outputs[iperm_idx]
+            final_states = final_states[iperm_idx]
+
+        return final_states
