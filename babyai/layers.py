@@ -128,8 +128,9 @@ class Encoder(nn.Module):
         self.position_encoding = PositionalEncoding(d_model, dropout=0.0)
         self.multi_head = MultiHeadedAttention(h, d_model, dropout=0.0)
         self.transition = nn.Linear(in_channels, imm_channels)
-        self.layer_norm = LayerNorm(torch.Size([d_model]))
+        self.layer_norm1 = LayerNorm(torch.Size([d_model]))
         self.reshape = nn.Linear(imm_channels, out_channels)
+        self.layer_norm2 = LayerNorm(torch.Size([out_channels]))
         self.apply(initialize_parameters)
 
     def forward(self,x,t):
@@ -137,13 +138,14 @@ class Encoder(nn.Module):
         for _ in range(t):
             mh = self.multi_head(x, x, x)
             x = x + mh
-            norm = self.layer_norm(x)
+            norm = self.layer_norm1(x)
 
             tran = self.transition(norm.squeeze(0))
             tran = tran + norm
-            x = self.layer_norm(tran)
+            x = self.layer_norm1(tran)
             
             x = self.reshape(x)
+            x = self.layer_norm2(x)
 
         return x
 
