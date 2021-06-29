@@ -39,7 +39,7 @@ def clones(module, N):
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
 
-    def __init__(self, d_model, dropout, max_len=256):
+    def __init__(self, d_model, dropout, max_len=800):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -123,12 +123,13 @@ def initialize_parameters(m):
             m.bias.data.fill_(0)
 
 class Encoder(nn.Module):
-    def __init__(self, d_model, h, seq_len, in_channels, out_channels):
+    def __init__(self, d_model, h, seq_len, in_channels, imm_channels, out_channels):
         super().__init__()
         self.position_encoding = PositionalEncoding(d_model, dropout=0.0)
         self.multi_head = MultiHeadedAttention(h, d_model, dropout=0.0)
-        self.transition = nn.Linear(in_channels, out_channels)
+        self.transition = nn.Linear(in_channels, imm_channels)
         self.layer_norm = LayerNorm(torch.Size([d_model]))
+        self.reshape = nn.Linear(imm_channels, out_channels)
         self.apply(initialize_parameters)
 
     def forward(self,x,t):
@@ -141,6 +142,8 @@ class Encoder(nn.Module):
             tran = self.transition(norm.squeeze(0))
             tran = tran + norm
             x = self.layer_norm(tran)
+            
+            x = self.reshape(x)
 
         return x
 
@@ -162,7 +165,7 @@ class Gate(nn.Module):
         self.layer_norm = nn.LayerNorm(torch.Size([7, 7, out_channels]))
 
 
-    def forward(self, obs, instr, t):
+    def forward(self, obs, instr, t=None):
         x = self.multihead(obs, instr, instr)
         x = x.view(x.size(0), obs.size(1), obs.size(2), x.size(-1))
         x = self.layer_norm(x)

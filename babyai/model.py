@@ -85,7 +85,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.pixel = 'pixel' in arch
         self.res = 'res' in arch
         self.use_attention = 'attention' in arch
-        use_film = not self.attention
+        use_film = not self.use_attention
 
         # Decide which components are enabled
         self.use_instr = use_instr
@@ -188,7 +188,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                     self.controllers.append(mod)
                     self.add_module('FiLM_' + str(ni), mod)
         if self.use_attention:
-            self.encoder = Encoder(self.instr_dim, 4, 9, self.image_dim, self.image_dim)
+            self.encoder = Encoder(self.instr_dim, 4, 9, self.instr_dim, self.instr_dim, self.image_dim)
             self.gates = clones(Gate(4, self.image_dim, self.image_dim), 3)
             self.post_cnn = nn.Sequential(*[
                 nn.Conv2d(128, 128, kernel_size=1),
@@ -381,7 +381,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 instr = instr[:, 0:lengths[0]]
                 outputs, final_states = self.instr_rnn(self.word_embedding(instr))
                 iperm_idx = None
-            final_states = final_states.transpose(0, 1).contiguous()
+            final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
             final_states = final_states.view(final_states.shape[0], -1)
             if iperm_idx is not None:
                 outputs, _ = pad_packed_sequence(outputs, batch_first=True)
@@ -433,11 +433,12 @@ class gSCAN(nn.Module):
         #                           padding_idx=input_padding_idx)
 
         # Instruction Encoder LSTM
+        self.num_encoder_layers = num_encoder_layers
         self.word_embedding = nn.Embedding(obs_space["instr"], 128)
         self.instr_rnn = nn.LSTM(
             128, 64, batch_first=True,
-            bidirectional=True)
-        self.final_instr_dim = 128
+            bidirectional=True, num_layers=self.num_encoder_layers)
+        self.final_instr_dim = 64
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
         self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
@@ -486,14 +487,17 @@ class gSCAN(nn.Module):
             inputs = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
 
             outputs, (final_states, cell) = self.instr_rnn(inputs)
+            # final_states [num_layers * num_directions, batch_size, hidden_size]
         else:
             instr = instr[:, 0:lengths[0]]
             outputs, final_states = self.instr_rnn(self.word_embedding(instr))
             iperm_idx = None
-        final_states = final_states.transpose(0, 1).contiguous()
-        final_states = final_states.view(final_states.shape[0], -1)
+        final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
+        final_states = final_states.view(final_states.shape[0], self.num_encoder_layers, 2, -1) # [batch_size, num_layers, num_directions, hidden_size]
+        final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
+        final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
         if iperm_idx is not None:
-            outputs, _ = pad_packed_sequence(outputs, batch_first=True)
+            outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, ]
             outputs = outputs[iperm_idx]
             final_states = final_states[iperm_idx]
 
