@@ -16,7 +16,7 @@ def select_obss_preprocessor(model_name, obs_space = None, pretrained_model = No
     if 'emb' in model_name:
         obss_preprocessor = utils.IntObssPreprocessor(model_name, obs_space, pretrained_model)
     elif 'transformer' in model_name:
-        obss_preprocessor = utils.TransformerObssPreprocessor(obs_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), 'pixels' in model_name)
+        obss_preprocessor = utils.TransformerObssPreprocessor(obs_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), 'pixels' or 'bow' in model_name)
     else:
         obss_preprocessor = utils.ObssPreprocessor(model_name, obs_space, pretrained_model)
     return obss_preprocessor

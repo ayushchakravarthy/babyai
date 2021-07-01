@@ -5,8 +5,11 @@ from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import babyai.rl
-from babyai.rl.utils.supervised_losses import required_heads
 import transformers
+from babyai.rl.utils.supervised_losses import required_heads
+from babyai.layers import Encoder, Gate, clones, ReAttention
+from babyai.layers import ConvolutionalNet
+from babyai.layers import EncoderRNN, Attention, LuongAttentionDecoderRNN, BahdanauAttentionDecoderRNN
 
 
 # From https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
@@ -67,7 +70,7 @@ class ImageBOWEmbeddingPretrained(nn.Module):
         # self.apply(initialize_parameters)
 
     def forward(self, inputs):
-        return self.embedding(inputs).sum(1)
+        return self.embedding(inputs.long()).sum(1).permute(0, 3, 1, 2)
 
 
 class ACModel(nn.Module, babyai.rl.RecurrentACModel):
@@ -78,9 +81,11 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         super().__init__()
 
         endpool = 'endpool' in arch
-        use_bow = 'bow' in arch
-        pixel = 'pixel' in arch
+        self.use_bow = 'bow' in arch
+        self.pixel = 'pixel' in arch
         self.res = 'res' in arch
+        self.use_attention = 'attention' in arch
+        use_film = not self.use_attention
 
         # Decide which components are enabled
         self.use_instr = use_instr
@@ -97,13 +102,13 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'attention', 'film']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
         if self.lang_model == 'transformer':
             if not self.use_instr:
                 raise ValueError("Transformers cannot be used when instructions are disabled")
-            use_transformer = True
+            self.use_transformer = True
             self.instr_dim = 768
             if finetune_transformer:
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
@@ -111,27 +116,42 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
             self.final_instr_dim = self.instr_dim
         else:
-            use_transformer = False
+            self.use_transformer = False
 
-
-        self.image_conv = nn.Sequential(*[
-            *([ImageBOWEmbedding(obs_space['image'], 128)] if use_bow else []),
-            *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if use_transformer and not pixel else []),
-            *([nn.Conv2d(
-                in_channels=3, out_channels=128, kernel_size=(8, 8),
-                stride=8, padding=0)] if pixel else []),
-            nn.Conv2d(
-                in_channels=128 if use_bow or pixel else 768 if use_transformer else 3, out_channels=128,
-                kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
-        ])
-        self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
+        if use_film:
+            self.image_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if self.use_transformer and not self.pixel else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if (self.use_bow and not self.use_transformer) or self.pixel else 768 if self.use_transformer else 3, out_channels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
+                nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
+            ])
+            self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
+            
+        elif self.use_attention:
+            self.image_conv = nn.Sequential(*[
+                *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
+                *([nn.Conv2d(
+                    in_channels=3, out_channels=128, kernel_size=(8, 8),
+                    stride=8, padding=0)] if self.pixel else []),
+                nn.Conv2d(
+                    in_channels=128 if self.use_bow or self.pixel else 3, out_channels=128,
+                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU()
+            ])
+        else:
+            raise ValueError("Incorrect Architecture name: {}".format(arch))
 
         # Define instruction embedding
         if self.use_instr:
@@ -156,16 +176,27 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
             if self.lang_model in ['attgru', 'transformer']:
                 self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
-
-            num_module = 2
-            self.controllers = []
-            for ni in range(num_module):
-                mod = FiLM(
-                    in_features=self.final_instr_dim,
-                    out_features=128 if ni < num_module-1 else self.image_dim,
-                    in_channels=128, imm_channels=128)
-                self.controllers.append(mod)
-                self.add_module('FiLM_' + str(ni), mod)
+              
+            if use_film:
+                num_module = 2
+                self.controllers = []
+                for ni in range(num_module):
+                    mod = FiLM(
+                        in_features=self.final_instr_dim,
+                        out_features=128 if ni < num_module-1 else self.image_dim,
+                        in_channels=128, imm_channels=128)
+                    self.controllers.append(mod)
+                    self.add_module('FiLM_' + str(ni), mod)
+        if self.use_attention:
+            self.encoder = Encoder(self.instr_dim, 4, 9, self.instr_dim, self.instr_dim, self.image_dim)
+            self.gates = clones(Gate(4, self.image_dim, self.image_dim), 3)
+            self.post_cnn = nn.Sequential(*[
+                nn.Conv2d(128, 128, kernel_size=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=7, stride=7)
+            ])
+            self.reattention = ReAttention(4, 128, 128)
 
         # Define memory and resize image embedding
         self.embedding_size = self.image_dim
@@ -260,7 +291,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             # have equal length along dimension 1.
             mask = mask[:, :instr_embedding.shape[1]]
             instr_embedding = instr_embedding[:, :mask.shape[1]]
-
             keys = self.memory2key(memory)
             pre_softmax = (keys[:, None, :] * instr_embedding).sum(2) + 1000 * mask
             attention = F.softmax(pre_softmax, dim=1)
@@ -270,14 +300,27 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         if 'pixel' in self.arch:
             x /= 256.0
+
         x = self.image_conv(x)
-        if self.use_instr:
+
+        if self.use_instr and not self.use_attention:
             for controller in self.controllers:
                 out = controller(x, instr_embedding)
                 if self.res:
                     out += x
                 x = out
-        x = F.relu(self.film_pool(x))
+            x = F.relu(self.film_pool(x))
+        
+        if self.use_attention:
+            instr_encoded = self.encoder(instr_embedding, t=1)
+
+            module_outputs = []
+            for t in range(3):
+                x = self.gates[t](x.permute(0, 2, 3, 1), instr_encoded, t)
+                module_outputs.append(x)
+            x = self.reattention(module_outputs, instr_encoded)
+            x = self.post_cnn(x)
+
         x = x.reshape(x.shape[0], -1)
 
         if self.use_memory:
@@ -338,7 +381,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 instr = instr[:, 0:lengths[0]]
                 outputs, final_states = self.instr_rnn(self.word_embedding(instr))
                 iperm_idx = None
-            final_states = final_states.transpose(0, 1).contiguous()
+            final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
             final_states = final_states.view(final_states.shape[0], -1)
             if iperm_idx is not None:
                 outputs, _ = pad_packed_sequence(outputs, batch_first=True)
@@ -353,3 +396,109 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         else:
             ValueError("Undefined instruction architecture: {}".format(self.use_instr))
+
+
+class gSCAN(nn.Module):
+    def __init__(self, obs_space, action_space, input_vocab_size: int, embedding_dimension: int, encoder_hidden_size: int,
+                 num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
+                 encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
+                 decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
+                 cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
+                 target_eos_idx: int, output_directory: str, conditional_attention: bool, **kwargs):
+        super(gSCAN, self).__init__()
+    
+        self.obs_space = obs_space
+
+        # Input: [batch_size, num_channels, image_height, image_width]
+        # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
+        self.situation_encoder = ConvolutionalNet(num_channels=obs_space['image'],
+                                                 cnn_kernel_size=3,
+                                                 num_conv_channels=128,
+                                                 dropout_probability=0.5)
+
+        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
+        # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
+        self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
+                                          hidden_size=decoder_hidden_size)
+
+        # Input: [batch_size, max_input_length]
+        # Output: [batch_size, hidden_size], [batch_size, max_input_length, hidden_size]
+        # self.encoder = EncoderRNN(input_size=input_vocab_size,
+        #                           embedding_dim=embedding_dimension,
+        #                           rnn_input_size=embedding_dimension,
+        #                           hidden_size=encoder_hidden_size,
+        #                           num_layers=num_encoder_layers,
+        #                           dropout_probability=encoder_dropout_p,
+        #                           bidirectional=encoder_bidirectional,
+        #                           padding_idx=input_padding_idx)
+
+        # Instruction Encoder LSTM
+        self.num_encoder_layers = num_encoder_layers
+        self.word_embedding = nn.Embedding(obs_space["instr"], 128)
+        self.instr_rnn = nn.LSTM(
+            128, 64, batch_first=True,
+            bidirectional=True, num_layers=self.num_encoder_layers)
+        self.final_instr_dim = 64
+        # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
+        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+        self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
+
+        # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
+        # Input for attention: [batch_size, max_input_length, hidden_size],
+        #                      [batch_size, image_width * image_width, hidden_size]
+        # Output: [max_target_length, batch_size, target_vocabulary_size]
+        self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
+                                                             output_size=target_vocabulary_size,
+                                                             num_layers=num_decoder_layers,
+                                                             dropout_probability=decoder_dropout_p,
+                                                             padding_idx=target_pad_idx,
+                                                             textual_attention=self.textual_attention,
+                                                             visual_attention=self.visual_attention,
+                                                             conditional_attention=conditional_attention)
+        # TODO: Have to set self.embedding_size                    
+        # Define actor's model
+        self.actor = nn.Sequential(
+            nn.Linear(self.embedding_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, action_space.n)
+        )
+
+        # Define critic's model
+        self.critic = nn.Sequential(
+            nn.Linear(self.embedding_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, 1)
+        )
+
+    def encode_input(self, instr):
+        lengths = (instr != 0).sum(1).long()
+        masks = (instr != 0).float()
+
+        if lengths.shape[0] > 1:
+            seq_lengths, perm_idx = lengths.sort(0, descending=True)
+            iperm_idx = torch.LongTensor(perm_idx.shape).fill_(0)
+            if instr.is_cuda: iperm_idx = iperm_idx.cuda()
+            for i, v in enumerate(perm_idx):
+                iperm_idx[v.data] = i
+
+            inputs = self.word_embedding(instr)
+            inputs = inputs[perm_idx]
+
+            inputs = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
+
+            outputs, (final_states, cell) = self.instr_rnn(inputs)
+            # final_states [num_layers * num_directions, batch_size, hidden_size]
+        else:
+            instr = instr[:, 0:lengths[0]]
+            outputs, final_states = self.instr_rnn(self.word_embedding(instr))
+            iperm_idx = None
+        final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
+        final_states = final_states.view(final_states.shape[0], self.num_encoder_layers, 2, -1) # [batch_size, num_layers, num_directions, hidden_size]
+        final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
+        final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
+        if iperm_idx is not None:
+            outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, ]
+            outputs = outputs[iperm_idx]
+            final_states = final_states[iperm_idx]
+
+        return final_states
