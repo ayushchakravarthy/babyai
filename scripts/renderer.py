@@ -31,6 +31,7 @@ class EnvRendererWrapper():
 
 		self.step = 0
 		self.episode_num = 0
+		self.done = False
 
 		graphs = [html.Div(children = [
 			html.H3(id = 'mission-text', style={'margin-bottom': 20}),
@@ -60,31 +61,38 @@ class EnvRendererWrapper():
 		if self.manual_mode:
 			updatefigs = None
 		else:
-			result = self.agent.act(self.obs, probes = self.probes_mode)
-			self.obs, reward, done, _ = self.env.step(result['action'])
-
-			updatefigs = [self.draw_env(), 'Mission: {}'.format(self.obs["mission"])]
-			if self.probes_mode:
-				updatefigs.append(self.draw_probes(result['probes']))
-				updatefigs.append(self.draw_actions(result['dist'].probs[0]))
-
-			self.agent.analyze_feedback(reward, done)
-			if 'dist' in result and 'value' in result:
-				dist, value = result['dist'], result['value']
-				dist_str = ", ".join("{:.4f}".format(float(p)) for p in dist.probs[0])
-				print("step: {}, mission: {}, dist: {}, entropy: {:.2f}, value: {:.2f}".format(
-					self.step, self.obs["mission"], dist_str, float(dist.entropy()), float(value)))
-			else:
-				print("step: {}, mission: {}".format(step, self.obs['mission']))
-			if done:
-				print("Reward:", reward)
+			if self.done:
+				print("Reward:", self.reward)
+				updatefigs = [self.draw_env(), 'Mission: {}'.format(self.obs["mission"])]
+				if self.probes_mode:
+					updatefigs.append(self.draw_blank())
+					updatefigs.append(self.draw_blank())
 				self.episode_num += 1
 				# env.seed(args.seed + self.episode_num)
 				self.obs = self.env.reset()
 				self.agent.on_reset()
 				self.step = 0
+				self.done = False
 			else:
 				self.step += 1
+
+				updatefigs = [self.draw_env(), 'Mission: {}'.format(self.obs["mission"])]
+				result = self.agent.act(self.obs, probes = self.probes_mode)
+				self.obs, self.reward, self.done, _ = self.env.step(result['action'])
+
+				if self.probes_mode:
+					updatefigs.append(self.draw_probes(result['probes']))
+					updatefigs.append(self.draw_actions(result['dist'].probs[0]))
+
+				self.agent.analyze_feedback(self.reward, self.done)
+				if 'dist' in result and 'value' in result:
+					dist, value = result['dist'], result['value']
+					dist_str = ", ".join("{:.4f}".format(float(p)) for p in dist.probs[0])
+					print("step: {}, mission: {}, dist: {}, entropy: {:.2f}, value: {:.2f}".format(
+						self.step, self.obs["mission"], dist_str, float(dist.entropy()), float(value)))
+				else:
+					print("step: {}, mission: {}".format(step, self.obs['mission']))
+			
 
 		return updatefigs
 

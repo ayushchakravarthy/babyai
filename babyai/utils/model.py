@@ -20,6 +20,8 @@ def load_model(model_name, raise_not_found=True):
         else:
             model = torch.load(path, map_location=torch.device("cpu"))
         model.eval()
+        if not hasattr(model, 'use_attention'):
+            model.use_attention = False
         return model
     except FileNotFoundError:
         if raise_not_found:

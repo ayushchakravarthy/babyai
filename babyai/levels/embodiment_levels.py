@@ -1,4 +1,6 @@
 
+import itertools
+
 import numpy as np
 import gym
 from gym_minigrid.minigrid import COLORS, WorldObj
@@ -86,27 +88,47 @@ class ColorSplitsBase(RoomGridLevel):
 
 
 class ColorSplitsTestBase(ColorSplitsBase):
+    generator = None
     def __init__(self, room_size=8, num_dists=3, seed=None):
+        self.batch_size = 120 # need to be synced manually with batch_evaluate
+        self.generator_id = 0
         super().__init__(room_size = room_size, num_dists = num_dists, seed = seed, training = False, max_steps = 16)
 
-    def add_distractors(self):
-        tgt_shape = self._rand_elem(self.shapes)
-        tgt_color = self.color_selector(tgt_shape)
-        getobj = lambda shape, color: WorldObj.decode(*WorldObj(shape, color).encode())
-        target = getobj(tgt_shape, tgt_color)
-        
-        dcolor = self._rand_elem(self.all_colors)
-        while dcolor == tgt_color:
-            dcolor = self._rand_elem(self.all_colors)
-        d1 = getobj(tgt_shape, dcolor)
+    def build_generator(self):
+        csgen = [('ball', c, dc, dshape) for dshape in ['box', 'key'] for c in self.ball_colors for dc in self.all_colors if dc != c]
+        csgen += [('box', c, dc, dshape) for dshape in ['ball', 'key'] for c in self.box_colors for dc in self.all_colors if dc != c]
+        ColorSplitsTestBase.generator = list(itertools.product(csgen, range(3), range(2)))
 
-        dshape = self._rand_elem(self.shapes)
-        while dshape == tgt_shape:
-            dshape = self._rand_elem(self.shapes)
+    def seed(self, seed):
+        if seed is None:
+            self.generator_id = 0
+        else:
+            self.generator_id = seed - int(1e9)
+        return super().seed(seed)
+
+    def add_distractors(self):
+        if ColorSplitsTestBase.generator is None:
+            self.build_generator()
+
+        if self.generator_id >= len(ColorSplitsTestBase.generator):
+            self.generator_id %= len(ColorSplitsTestBase.generator)
+            print('Generator exhausted')
+
+        (tgt_shape, tgt_color, dcolor, dshape), tgt_loc, dselect = ColorSplitsTestBase.generator[self.generator_id]
+        self.generator_id += self.batch_size        
+
+        getobj = lambda shape, color: WorldObj.decode(*WorldObj(shape, color).encode())
+        
+        target = getobj(tgt_shape, tgt_color)
+        d1 = getobj(tgt_shape, dcolor)
         d2 = getobj(dshape, tgt_color)
 
-        objs = [target, d1, d2]
-        self.np_random.shuffle(objs)
+        objs = [None, None, None]
+        distractors = [d1, d2]
+        objs[tgt_loc] = target
+        objs[0 if tgt_loc != 0 else 1] = distractors[dselect]
+        objs[2 if tgt_loc != 2 else 1] = distractors[1-dselect]
+        
         locs = [(2,3), (4,3), (6,3)]
 
         room = self.get_room(0, 0)
@@ -173,11 +195,13 @@ class Level_PickupLocalColorSplitsTest(Level_PickupLocalColorSplits):
 
 
 class Level_PickupLocalColorSplitsTestStrict(ColorSplitsTestBase):
+
     def gen_mission(self):
         self.agent_pos = None
-        pos = self.place_obj(None, (4,6), (1,1), max_tries=1)
+        pos = np.array((4,6))
+        self.grid.set(*pos, None)
         self.agent_pos = pos
-        self.agent_dir = 0
+        self.agent_dir = 3
 
         target = self.add_distractors()
         self.instrs = PickupInstr(ObjDesc(target.type, target.color), strict = True)
