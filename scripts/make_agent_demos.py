@@ -24,6 +24,7 @@ import blosc
 import torch
 
 import babyai.utils as utils
+from gym_minigrid.wrappers import RGBImgPartialObsWrapper
 
 # Parse arguments
 
@@ -50,7 +51,8 @@ parser.add_argument("--filter-steps", type=int, default=0,
                     help="filter out demos with number of steps more than filter-steps")
 parser.add_argument("--on-exception", type=str, default='warn', choices=('warn', 'crash'),
                     help="How to handle exceptions during demo generation")
-
+parser.add_argument("--pixels", action="store_true", default=False,
+                    help="use pixels observations")
 parser.add_argument("--job-script", type=str, default=None,
                     help="The script that launches make_agent_demos.py at a cluster.")
 parser.add_argument("--jobs", type=int, default=0,
@@ -73,6 +75,9 @@ def generate_demos(n_episodes, valid, seed, shift=0):
 
     # Generate environment
     env = gym.make(args.env)
+    use_pixels = args.pixels
+    if use_pixels:
+        env = RGBImgPartialObsWrapper(env)
 
     agent = utils.load_agent(env, args.model, args.demos, 'agent', args.argmax, args.env)
     demos_path = utils.get_demos_path(args.demos, args.env, 'agent', valid)
@@ -109,7 +114,10 @@ def generate_demos(n_episodes, valid, seed, shift=0):
 
                 actions.append(action)
                 images.append(obs['image'])
-                directions.append(obs['direction'])
+                if use_pixels:
+                    directions.append(None)
+                else:
+                    directions.append(obs['direction'])
 
                 obs = new_obs
             if reward > 0 and (args.filter_steps == 0 or len(images) <= args.filter_steps):

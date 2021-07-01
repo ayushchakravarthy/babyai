@@ -1,19 +1,22 @@
 import copy
-import gym
 import time
 import datetime
-import numpy as np
 import sys
 import itertools
-import torch
-from babyai.evaluate import batch_evaluate
-import babyai.utils as utils
-from babyai.rl import DictList
-from babyai.model import ACModel
 import multiprocessing
 import os
 import json
 import logging
+
+import numpy as np
+import torch
+import gym
+from babyai.evaluate import batch_evaluate
+import babyai.utils as utils
+from babyai.rl import DictList
+from babyai.model import ACModel
+from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +81,13 @@ class ImitationLearning(object):
 
         utils.seed(self.args.seed)
         self.val_seed = self.args.val_seed
+        self.use_pixel = 'pixels' in args.model
 
         # args.env is a list when training on multiple environments
         if getattr(args, 'multi_env', None):
             self.env = [gym.make(item) for item in args.multi_env]
+            if self.use_pixel:
+                self.env = [RGBImgPartialObsWrapper(e) for e in self.env]
 
             self.train_demos = []
             for demos, episodes in zip(args.multi_demos, args.multi_episodes):
@@ -112,6 +118,8 @@ class ImitationLearning(object):
 
         else:
             self.env = gym.make(self.args.env)
+            if self.use_pixel:
+                self.env = RGBImgPartialObsWrapper(self.env)
 
             demos_path = utils.get_demos_path(args.demos, args.env, args.demos_origin, valid=False)
             demos_path_valid = utils.get_demos_path(args.demos, args.env, args.demos_origin, valid=True)
@@ -132,8 +140,7 @@ class ImitationLearning(object):
             observation_space = self.env.observation_space
             action_space = self.env.action_space
 
-        self.obss_preprocessor = utils.ObssPreprocessor(args.model, observation_space,
-                                                        getattr(self.args, 'pretrained_model', None))
+        self.obss_preprocessor = utils.select_obss_preprocessor(args.model, observation_space, getattr(self.args, 'pretrained_model', None))
 
         # Define actor-critic model
         self.acmodel = utils.load_model(args.model, raise_not_found=False)
@@ -146,7 +153,8 @@ class ImitationLearning(object):
                                        args.image_dim, args.memory_dim, args.instr_dim,
                                        not self.args.no_instr, self.args.instr_arch,
                                        not self.args.no_mem, self.args.arch)
-        self.obss_preprocessor.vocab.save()
+        if self.obss_preprocessor.vocab is not None:
+            self.obss_preprocessor.vocab.save()
         utils.save_model(self.acmodel, args.model)
 
         self.acmodel.train()
@@ -336,7 +344,7 @@ class ImitationLearning(object):
 
         for env_name in ([self.args.env] if not getattr(self.args, 'multi_env', None)
                          else self.args.multi_env):
-            logs += [batch_evaluate(agent, env_name, self.val_seed, episodes)]
+            logs += [batch_evaluate(agent, env_name, self.val_seed, episodes, pixel = self.use_pixel)]
             self.val_seed += episodes
         agent.model.train()
 
@@ -371,7 +379,7 @@ class ImitationLearning(object):
         utils.save_model(self.acmodel, self.args.model)
 
         # best mean return to keep track of performance on validation set
-        best_success_rate, patience, i = 0, 0, 0
+        best_success_rate, best_accuracy, patience, i = 0, 0, 0, 0
         total_start_time = time.time()
 
         epoch_length = self.args.epoch_length
@@ -432,8 +440,7 @@ class ImitationLearning(object):
 
                 valid_log = self.validate(self.args.val_episodes)
                 mean_return = [np.mean(log['return_per_episode']) for log in valid_log]
-                success_rate = [np.mean([1 if r > 0 else 0 for r in log['return_per_episode']]) for log in
-                                valid_log]
+                success_rate = [np.mean([1 if r > 0 else 0 for r in log['return_per_episode']]) for log in valid_log]
 
                 val_log = self.run_epoch_recurrence(self.val_demos)
                 validation_accuracy = np.mean(val_log["accuracy"])
@@ -451,8 +458,9 @@ class ImitationLearning(object):
                     csv_writer.writerow(train_data + validation_data)
 
                 # In case of a multi-env, the update condition would be "better mean success rate" !
-                if np.mean(success_rate) > best_success_rate:
+                if np.mean(success_rate) > best_success_rate or validation_accuracy > best_accuracy:
                     best_success_rate = np.mean(success_rate)
+                    best_accuracy = validation_accuracy
                     status['patience'] = 0
                     with open(status_path, 'w') as dst:
                         json.dump(status, dst)
@@ -462,7 +470,8 @@ class ImitationLearning(object):
                     if torch.cuda.is_available():
                         self.acmodel.cpu()
                     utils.save_model(self.acmodel, self.args.model + "_best")
-                    self.obss_preprocessor.vocab.save(utils.get_vocab_path(self.args.model + "_best"))
+                    if self.obss_preprocessor.vocab is not None:
+                        self.obss_preprocessor.vocab.save(utils.get_vocab_path(self.args.model + "_best"))
                     if torch.cuda.is_available():
                         self.acmodel.cuda()
                 else:
@@ -473,7 +482,8 @@ class ImitationLearning(object):
                 if torch.cuda.is_available():
                     self.acmodel.cpu()
                 utils.save_model(self.acmodel, self.args.model)
-                self.obss_preprocessor.vocab.save()
+                if self.obss_preprocessor.vocab is not None:
+                    self.obss_preprocessor.vocab.save()
                 if torch.cuda.is_available():
                     self.acmodel.cuda()
                 with open(status_path, 'w') as dst:

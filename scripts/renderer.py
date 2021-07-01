@@ -111,7 +111,7 @@ class EnvRendererWrapper():
 		return fig
 
 	def draw_env(self):
-		img = self.env.render(mode = 'novis')
+		img = self.env.render(mode = 'rgb_array')
 		fig = px.imshow(img)
 		if len(img) > 500:
 			fig.layout.width = len(img)*1.25

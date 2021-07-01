@@ -60,7 +60,7 @@ def main(args):
         header.extend(["validation_success_rate_{}".format(env) for env in args.multi_env])
     writer = None
     if args.tb:
-        from tensorboardX import SummaryWriter
+        from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(utils.get_log_dir(args.model))
 
     # Define csv writer

@@ -45,6 +45,12 @@ parser.add_argument("--ppo-epochs", type=int, default=4,
                     help="number of epochs for PPO (default: 4)")
 parser.add_argument("--save-interval", type=int, default=50,
                     help="number of updates between two saves (default: 50, 0 means no saving)")
+parser.add_argument("--finetune-transformer", action="store_true", default=False,
+                    help="enable finetuning of the transformer")
+parser.add_argument("--episodes", type=int, default=int(1e9),
+                    help="maximum number of episodes to train")
+parser.add_argument("--warmup", type=int, default=0,
+                    help="number of initial validations to not lose patience")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -128,7 +134,9 @@ if os.path.exists(status_path):
 else:
     status = {'i': 0,
               'num_episodes': 0,
-              'num_frames': 0}
+              'num_frames': 0,
+              'patience': 0,
+              'warmup': 0}
 
 # Define logger and Tensorboard writer and CSV writer
 
@@ -138,7 +146,7 @@ header = (["update", "episodes", "frames", "FPS", "duration"]
           + ["num_frames_" + stat for stat in ['mean', 'std', 'min', 'max']]
           + ["entropy", "value", "policy_loss", "value_loss", "loss", "grad_norm"])
 if args.tb:
-    from tensorboardX import SummaryWriter
+    from torch.utils.tensorboard import SummaryWriter
 
     writer = SummaryWriter(utils.get_log_dir(args.model))
 csv_path = os.path.join(utils.get_log_dir(args.model), 'log.csv')
@@ -178,7 +186,10 @@ total_start_time = time.time()
 best_success_rate = 0
 best_mean_return = 0
 test_env_name = args.env
-while status['num_frames'] < args.frames:
+while status['num_frames'] < args.frames and status['num_episodes'] < args.episodes:
+    if status['patience'] > args.patience:
+        break
+
     # Update parameters
 
     update_start_time = time.time()
@@ -245,9 +256,17 @@ while status['num_frames'] < args.frames:
             best_mean_return = mean_return
             save_model = True
         if save_model:
+            status['patience'] = 0
             utils.save_model(acmodel, args.model + '_best')
             if obss_preprocessor.vocab is not None:
                 obss_preprocessor.vocab.save(utils.get_vocab_path(args.model + '_best'))
             logger.info("Return {: .2f}; best model is saved".format(mean_return))
         else:
-            logger.info("Return {: .2f}; not the best model; not saved".format(mean_return))
+            logger.info("Return {: .2f}; success {: .2f}; not the best model; not saved".format(mean_return, success_rate))
+            if status['warmup'] < args.warmup:
+                status['warmup'] += 1
+                logger.info('Warm up step {:d}/{:d}, not losing patience'.format(status['warmup'], args.warmup))
+            else:
+                status['patience'] += 1
+                logger.info("Losing patience, new value={}, limit={}".format(status['patience'], args.patience))
+
