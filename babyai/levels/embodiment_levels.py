@@ -347,6 +347,7 @@ class Level_PutNextLocalShapeSplits(RoomGridLevel):
     """
 
     def __init__(self, room_size=8, num_objs=8, seed=None, training = True):
+        self.training = training
         if training:
             self.o1types = {'box', 'ball'}
             self.o2types = {'key'}
@@ -423,6 +424,29 @@ class Level_PutNextLocalShapeSplits(RoomGridLevel):
 
 
 class Level_PutNextLocalShapeSplitsTest(Level_PutNextLocalShapeSplits):
+    def __init__(self, room_size=8, num_objs=8, seed=None):
+        super().__init__(room_size=room_size, num_objs = num_objs, seed=seed, training = False)
+
+
+class Level_PutNextPickupLocalShapeSplits(Level_PutNextLocalShapeSplits):
+    def __init__(self, room_size=8, num_objs=8, seed=None, training = True):
+        super().__init__(room_size=room_size, num_objs = num_objs, seed=seed, training = training)
+
+    def gen_mission(self):
+        if self.training:
+            mode = self.np_random.choice(['putnext', 'pickup'])
+            if mode == 'pickup':
+                self.place_agent()
+                objs = self.add_distractors(num_distractors=self.num_objs, all_unique=True, guaranteed_shapes = ['key', 'box', 'ball'])
+                self.check_objs_reachable()
+
+                target = self._rand_elem(objs)
+                self.instrs = PickupInstr(ObjDesc(target.type, target.color), strict = True)
+                return
+        super().gen_mission()
+
+
+class Level_PutNextPickupLocalShapeSplitsTest(Level_PutNextPickupLocalShapeSplits):
     def __init__(self, room_size=8, num_objs=8, seed=None):
         super().__init__(room_size=room_size, num_objs = num_objs, seed=seed, training = False)
 
