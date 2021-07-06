@@ -1,15 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import transformers
+import babyai.rl
 from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-import babyai.rl
-import transformers
 from babyai.rl.utils.supervised_losses import required_heads
 from babyai.layers import Encoder, Gate, clones, ReAttention
 from babyai.layers import ConvolutionalNet
-from babyai.layers import EncoderRNN, Attention, LuongAttentionDecoderRNN, BahdanauAttentionDecoderRNN
+from babyai.layers import Attention, BahdanauAttentionDecoderRNN
 
 
 # From https://github.com/ikostrikov/pytorch-a2c-ppo-acktr/blob/master/model.py
@@ -137,7 +137,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
             ])
             self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
-            
         elif self.use_attention:
             self.image_conv = nn.Sequential(*[
                 *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
@@ -201,7 +200,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         # Define memory and resize image embedding
         self.embedding_size = self.image_dim
         if self.use_memory:
-            self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
+            self.memory_rnn = nn.LSTM(self.image_dim, self.memory_dim)
             self.embedding_size = self.semi_memory_size
 
         # Define actor's model
@@ -273,7 +272,8 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
     def forward(self, obs, memory, instr_embedding=None, probe_attention = False):
         if self.use_instr and instr_embedding is None:
-            instr_embedding = self._get_instr_embedding(obs.instr)
+            instr_embedding= self._get_instr_embedding(obs.instr)
+
         if self.use_instr and self.lang_model in {"attgru", "transformer"}:
             # outputs: B x L x D
             # memory: B x M
@@ -404,14 +404,15 @@ class gSCAN(nn.Module):
                  encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
                  decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
                  cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
-                 target_eos_idx: int, output_directory: str, conditional_attention: bool, **kwargs):
+                 target_eos_idx: int, output_directory: str, conditional_attention: bool, **kwargs, aux_info=None):
         super(gSCAN, self).__init__()
     
         self.obs_space = obs_space
+        self.aux_info = aux_info
 
         # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
-        self.situation_encoder = ConvolutionalNet(num_channels=obs_space['image'],
+        self.situation_encoder = ConvolutionalNet(num_channels=3,
                                                  cnn_kernel_size=3,
                                                  num_conv_channels=128,
                                                  dropout_probability=0.5)
@@ -421,16 +422,6 @@ class gSCAN(nn.Module):
         self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
                                           hidden_size=decoder_hidden_size)
 
-        # Input: [batch_size, max_input_length]
-        # Output: [batch_size, hidden_size], [batch_size, max_input_length, hidden_size]
-        # self.encoder = EncoderRNN(input_size=input_vocab_size,
-        #                           embedding_dim=embedding_dimension,
-        #                           rnn_input_size=embedding_dimension,
-        #                           hidden_size=encoder_hidden_size,
-        #                           num_layers=num_encoder_layers,
-        #                           dropout_probability=encoder_dropout_p,
-        #                           bidirectional=encoder_bidirectional,
-        #                           padding_idx=input_padding_idx)
 
         # Instruction Encoder LSTM
         self.num_encoder_layers = num_encoder_layers
@@ -443,19 +434,20 @@ class gSCAN(nn.Module):
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
         self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
 
+        self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
+        self.embedding_size = self.semi_memory_size
+
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
         # Input for attention: [batch_size, max_input_length, hidden_size],
         #                      [batch_size, image_width * image_width, hidden_size]
         # Output: [max_target_length, batch_size, target_vocabulary_size]
         self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
-                                                             output_size=target_vocabulary_size,
+                                                             output_size=self.embedding_size,
                                                              num_layers=num_decoder_layers,
                                                              dropout_probability=decoder_dropout_p,
-                                                             padding_idx=target_pad_idx,
                                                              textual_attention=self.textual_attention,
-                                                             visual_attention=self.visual_attention,
-                                                             conditional_attention=conditional_attention)
-        # TODO: Have to set self.embedding_size                    
+                                                             visual_attention=self.visual_attention)
+                                                             
         # Define actor's model
         self.actor = nn.Sequential(
             nn.Linear(self.embedding_size, 64),
@@ -470,7 +462,51 @@ class gSCAN(nn.Module):
             nn.Linear(64, 1)
         )
 
-    def encode_input(self, instr):
+        self.apply(initialize_parameters)
+
+        # Define head for extra info
+        if self.aux_info:
+            self.extra_heads = None
+            self.add_heads()
+
+    def add_heads(self):
+        '''
+        When using auxiliary tasks, the environment yields at each step some binary, continous, or multiclass
+        information. The agent needs to predict those information. This function add extra heads to the model
+        that output the predictions. There is a head per extra information (the head type depends on the extra
+        information type).
+        '''
+        self.extra_heads = nn.ModuleDict()
+        for info in self.aux_info:
+            if required_heads[info] == 'binary':
+                self.extra_heads[info] = nn.Linear(self.embedding_size, 1)
+            elif required_heads[info].startswith('multiclass'):
+                n_classes = int(required_heads[info].split('multiclass')[-1])
+                self.extra_heads[info] = nn.Linear(self.embedding_size, n_classes)
+            elif required_heads[info].startswith('continuous'):
+                if required_heads[info].endswith('01'):
+                    self.extra_heads[info] = nn.Sequential(nn.Linear(self.embedding_size, 1), nn.Sigmoid())
+                else:
+                    raise ValueError('Only continous01 is implemented')
+            else:
+                raise ValueError('Type not supported')
+            # initializing these parameters independently is done in order to have consistency of results when using
+            # supervised-loss-coef = 0 and when not using any extra binary information
+            self.extra_heads[info].apply(initialize_parameters)
+
+    def add_extra_heads_if_necessary(self, aux_info):
+        '''
+        This function allows using a pre-trained model without aux_info and add aux_info to it and still make
+        it possible to finetune.
+        '''
+        try:
+            if not hasattr(self, 'aux_info') or not set(self.aux_info) == set(aux_info):
+                self.aux_info = aux_info
+                self.add_heads()
+        except Exception:
+            raise ValueError('Could not add extra heads')
+
+    def _get_instr_embedding(self, instr):
         lengths = (instr != 0).sum(1).long()
         masks = (instr != 0).float()
 
@@ -497,8 +533,97 @@ class gSCAN(nn.Module):
         final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
         final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
         if iperm_idx is not None:
-            outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, ]
-            outputs = outputs[iperm_idx]
-            final_states = final_states[iperm_idx]
+            outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, seq_len, 2 * hidden_size]
+            outputs = outputs.view(outputs.size(0), outputs.size(1), 2, -1)
+            outputs = torch.sum(outputs, 2) # [batch_size, seq_len, hidden_size]
+            outputs = outputs.index_select(dim=0, index=iperm_idx)
+            final_states = final_states.index_select(dim=0, index=iperm_idx)
 
-        return final_states
+        return outputs, final_states, lengths
+
+    @property
+    def memory_size(self):
+        return 2 * self.semi_memory_size
+
+    @property
+    def semi_memory_size(self):
+        return self.memory_dim
+
+
+    def encode_inputs(self, instr, visual_input):
+        encoded_image = self.situation_encoder(visual_input)
+        outputs, final_state, command_lengths = self._get_instr_embedding(instr)
+        return {"encoded_image": encoded_image, "encoded_commands": outputs, "final_state": final_state, "command_lengths": command_lengths}
+    
+    def decode_input(self, target_token, hidden, encoder_outputs, input_lengths, encoded_situations):
+        return self.attention_decoder.forward_step(input_tokens=target_token, last_hidden=hidden,
+                                                   encoded_commands=encoder_outputs, commands_lengths=input_lengths,
+                                                   encoded_situations=encoded_situations)
+    
+    def decode_input_batched(self, target_batch, target_lengths,
+                             initial_hidden, encoded_commands,
+                             command_lengths, encoded_situations):
+        """Decode a batch of input sequences."""
+        initial_hidden = self.attention_decoder.initialize_hidden(
+            nn.Tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+        decoder_output_batched, _, context_situation = self.attention_decoder(input_tokens=target_batch,
+                                                                              input_lengths=target_lengths,
+                                                                              init_hidden=initial_hidden,
+                                                                              encoded_commands=encoded_commands,
+                                                                              commands_lengths=command_lengths,
+                                                                              encoded_situations=encoded_situations)
+        decoder_output_batched = F.log_softmax(decoder_output_batched, dim=-1)
+        return decoder_output_batched, context_situation
+    
+    def initialize_hidden(self, encoder_message):
+        encoder_message = encoder_message.unsqueeze(0) # [1, batch_size, hidden_size]
+        encoder_message = encoder_message.expand(
+            self.num_encoder_layers,
+            -1, 
+            -1
+        ).contiguous()
+        return encoder_message.clone(), encoder_message.clone()
+
+
+    def forward(self, obs, memory):
+        # compute encoder output
+        x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
+        encoder_output = self.encode_inputs(obs.instr, x)
+
+        # get encoder outputs
+        initial_hidden = encoder_output["hidden_states"]
+        encoded_commands = encoder_output["encoded_commands"]["encoder_outputs"]
+        command_lengths = encoder_output["command_lengths"]
+        encoded_situations = encoder_output["encoded_situations"]
+
+        # for efficiency
+        projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
+        projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
+
+
+        hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
+        hidden = self.memory_rnn(x, hidden)
+        embedding = hidden[0]
+        memory = torch.cat(hidden, dim=1)
+        
+        if hasattr(self, 'aux_info') and self.aux_info:
+            extra_predictions = {info: self.extra_heads[info](embedding) for info in self.extra_heads}
+        else:
+            extra_predictions = dict()
+
+        x = self.actor(embedding)
+        dist = Categorical(logits=F.log_softmax(x, dim=1))
+
+        x = self.critic(embedding)
+        value = x.squeeze(1)
+
+        """
+        TODO List:
+        1. Bahdanau textual and visual attention from layers.py
+        2. Concatenation and use memory rnn setup from above
+        3. setup actor critic passes and outputs
+
+        Side: Maybe have to implement other functions
+        """
+        
+        return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
