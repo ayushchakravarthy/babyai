@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import transformers
 import babyai.rl
-from torch.autograd import Variable
 from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from babyai.rl.utils.supervised_losses import required_heads
@@ -200,7 +199,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         # Define memory and resize image embedding
         self.embedding_size = self.image_dim
         if self.use_memory:
-            self.memory_rnn = nn.LSTM(self.image_dim, self.memory_dim)
+            self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
             self.embedding_size = self.semi_memory_size
 
         # Define actor's model
@@ -325,6 +324,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         if self.use_memory:
             hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
+            print(hidden[0].shape, hidden[1].shape)
             hidden = self.memory_rnn(x, hidden)
             embedding = hidden[0]
             memory = torch.cat(hidden, dim=1)
@@ -399,16 +399,14 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
 
 class gSCAN(nn.Module):
-    def __init__(self, obs_space, action_space, input_vocab_size: int, embedding_dimension: int, encoder_hidden_size: int,
-                 num_encoder_layers: int, target_vocabulary_size: int, encoder_dropout_p: float,
-                 encoder_bidirectional: bool, num_decoder_layers: int, decoder_dropout_p: float,
-                 decoder_hidden_size: int, num_cnn_channels: int, cnn_kernel_size: int,
-                 cnn_dropout_p: float, cnn_hidden_num_channels: int, input_padding_idx: int, target_pad_idx: int,
-                 target_eos_idx: int, output_directory: str, conditional_attention: bool, **kwargs, aux_info=None):
+    def __init__(self, obs_space, action_space, encoder_hidden_size: int,
+                 num_encoder_layers: int, num_decoder_layers: int, decoder_dropout_p: float,
+                 decoder_hidden_size: int, cnn_hidden_num_channels: int, aux_info=None):
         super(gSCAN, self).__init__()
     
         self.obs_space = obs_space
         self.aux_info = aux_info
+        self.num_decoder_layers = num_decoder_layers
 
         # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
@@ -427,15 +425,16 @@ class gSCAN(nn.Module):
         self.num_encoder_layers = num_encoder_layers
         self.word_embedding = nn.Embedding(obs_space["instr"], 128)
         self.instr_rnn = nn.LSTM(
-            128, 64, batch_first=True,
+            128, 128, batch_first=True,
             bidirectional=True, num_layers=self.num_encoder_layers)
-        self.final_instr_dim = 64
+        self.final_instr_dim = 128
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
         self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
 
         self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
         self.embedding_size = self.semi_memory_size
+        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
 
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
         # Input for attention: [batch_size, max_input_length, hidden_size],
@@ -565,7 +564,7 @@ class gSCAN(nn.Module):
                              command_lengths, encoded_situations):
         """Decode a batch of input sequences."""
         initial_hidden = self.attention_decoder.initialize_hidden(
-            nn.Tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+            torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
         decoder_output_batched, _, context_situation = self.attention_decoder(input_tokens=target_batch,
                                                                               input_lengths=target_lengths,
                                                                               init_hidden=initial_hidden,
@@ -578,7 +577,7 @@ class gSCAN(nn.Module):
     def initialize_hidden(self, encoder_message):
         encoder_message = encoder_message.unsqueeze(0) # [1, batch_size, hidden_size]
         encoder_message = encoder_message.expand(
-            self.num_encoder_layers,
+            self.num_decoder_layers,
             -1, 
             -1
         ).contiguous()
@@ -591,7 +590,7 @@ class gSCAN(nn.Module):
         encoder_output = self.encode_inputs(obs.instr, x)
 
         # get encoder outputs
-        initial_hidden = encoder_output["hidden_states"]
+        initial_hidden = encoder_output["final_state"]
         encoded_commands = encoder_output["encoded_commands"]["encoder_outputs"]
         command_lengths = encoder_output["command_lengths"]
         encoded_situations = encoder_output["encoded_situations"]
@@ -600,9 +599,33 @@ class gSCAN(nn.Module):
         projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
         projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
 
+        hidden = self.attention_decoder.initialize_hidden(
+            torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+        last_hidden, last_cell = hidden
 
-        hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
-        hidden = self.memory_rnn(x, hidden)
+        context_command, attention_weights_commands = self.textual_attention(
+            queries=last_hidden.transpose(0, 1), projected_keys=projected_keys_textual.transpose(0, 1),
+            values=projected_keys_visual.transpose(0, 1), memory_lengths=command_lengths)
+        batch_size, image_num_memory, _ = projected_keys_visual.size()
+        situation_lengths = [image_num_memory for _ in range(batch_size)]
+
+        queries = last_hidden.transpose(0, 1)
+
+        context_situation, attention_weights_situations = self.visual_attention(
+            queries=queries, projected_keys=projected_keys_visual,
+            values=projected_keys_visual, memory_lengths=situation_lengths)
+        # context : [batch_size, 1, hidden_size]
+        # attention_weights : [batch_size, 1, max_input_length]
+
+        # Concatenate the context vector and RNN hidden state, and map to an output
+        attention_weights_commands = attention_weights_commands.squeeze(1)  # [batch_size, max_input_length]
+        attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
+        concat_input = torch.cat([context_command.transpose(0, 1),
+                                  context_situation.transpose(0, 1)], dim=2)  # [1, batch_size hidden_size*3]
+
+        hidden = (last_hidden, last_cell)
+
+        hidden = self.memory_rnn(concat_input, hidden)
         embedding = hidden[0]
         memory = torch.cat(hidden, dim=1)
         
