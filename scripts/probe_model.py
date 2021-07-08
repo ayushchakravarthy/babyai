@@ -14,6 +14,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 from adjustText import adjust_text
+import transformers
 
 import babyai
 import babyai.utils as utils
@@ -56,10 +57,52 @@ def probe_vocab(model):
 	plt.show()
 
 
-def probe_sents(model):
+def probe_sents_transformer():
 	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
-	combs = itertools.product(['a', 'the'], colors, ['key', 'box'])
-	sents = [['go', 'to'] + list(c) for c in combs]
+	combs = itertools.product(['a', 'the'], colors, ['key', 'box', 'ball'])
+	commands = [['pick', 'up'], ['go', 'to']]
+	sents = [cmd + list(c) for c in combs for cmd in commands]
+
+	sentlabels = [' '.join(sent[-3:]) for sent in sents]
+	sents = [' '.join(s) for s in sents]
+
+	model = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False).to(torch.device('cuda'))
+	tokenizer = transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+
+	fdict = tokenizer(sents, return_tensors = 'pt', padding = True).to(torch.device('cuda'))
+	embs = model(**fdict).last_hidden_state
+	embs = np.take(embs.cpu().detach().numpy(), 5, axis = 1)
+
+	plot_embs(embs, sents)
+
+
+def probe_sents_transformer_2objs():
+	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
+	shapes = ['key', 'box', 'ball']
+	combs = list(itertools.product(colors, shapes[:1], colors, shapes[1:]))
+	combs += list(itertools.product(colors, shapes[1:], colors, shapes[:1]))
+
+	sents = [['put', 'the'] + list(c[:2]) + ['next', 'to', 'the'] + list(c[2:]) for c in combs]
+
+	sentlabels = [' '.join(c[:2]) + ' -> ' + ' '.join(c[2:]) for c in combs]
+	cmap = {'box': 'green', 'ball': 'blue', 'key': 'red'}
+	colorlabels = [cmap[c[1]] for c in combs]
+	sents = [' '.join(s) for s in sents]
+
+	model = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False).to(torch.device('cuda'))
+	tokenizer = transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+
+	fdict = tokenizer(sents, return_tensors = 'pt', padding = True).to(torch.device('cuda'))
+	embs = model(**fdict).last_hidden_state
+	embs = np.take(embs.cpu().detach().numpy(), 9, axis = 1)
+
+	plot_embs(embs, sentlabels, colorlabels)
+
+
+def probe_sents_babyai(model):
+	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
+	combs = itertools.product(['a', 'the'], colors, ['key', 'box', 'ball'])
+	sents = [['pick', 'up'] + list(c) for c in combs]
 
 	vocab, acmodel = load_model(model)
 	ipt = np.array([[vocab[w] for w in sent] for sent in sents])
@@ -67,8 +110,36 @@ def probe_sents(model):
 
 	embs = acmodel.word_embedding(torch.tensor(ipt, device = torch.device('cuda')))
 	embs = acmodel.instr_rnn(embs)[0]
-	embs = np.take(embs.cpu().detach().numpy(), 3, axis = 1)
+	embs = np.take(embs.cpu().detach().numpy(), 2, axis = 1)
 
+	plot_embs(embs, sentlabels)
+
+
+def probe_conv(model):
+	acmodel = utils.load_model(model)
+	convweights = acmodel.image_conv.get_submodule('0').state_dict()['weight']
+	convweights = torch.clip(convweights, -.1, .1).cpu().detach().numpy()
+
+	fig, axs = plt.subplots(8, 16, sharex = True, sharey = True)
+	fig.subplots_adjust(hspace = 0, wspace = 0)
+
+	for i in range(8):
+		for j in range(16):
+			idx = i*16 + j
+			img = convweights[idx]
+			img = np.moveaxis(img, 0, -1)
+			img = img * 5 + .5
+			im = axs[i][j].imshow(img)
+
+	plt.show()
+
+
+
+def plot_embs(embs, sentlabels, colorlabels = None):
+	if colorlabels is None:
+		colorlabels = sentlabels
+	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
+	shapes = {'key': '1', 'box': 's', 'ball': 'o'}
 	pca = PCA(n_components = 2)
 	red = pca.fit_transform(embs)
 
@@ -78,15 +149,20 @@ def probe_sents(model):
 	Y = red[:,1]
 	annotations = []
 	for i, n in enumerate(sentlabels):
-		clr = 'black'
+		clr = 'blue'
+		mkr = 'o'
 		for c in colors:
-			if c in n:
+			if c in colorlabels[i]:
 				clr = c
 				break
-		ax.scatter(X[i], Y[i], s = 30, color = COLORS[clr]/255, alpha = 1)
+		# for s, m in shapes.items():
+		# 	if s in n:
+		# 		mkr = m
+		# 		break
+		ax.scatter(X[i], Y[i], marker = mkr, s = 30, color = COLORS[clr]/255, alpha = 1)
 		annotations.append(ax.text(X[i], Y[i], n, color = COLORS[clr]/255, fontsize = 12, alpha = 1))
 
-	adjust_text(annotations)
+	# adjust_text(annotations)
 
 	fig.tight_layout()
 
@@ -112,5 +188,7 @@ def sents_color_linreg(model):
 
 
 if __name__ == '__main__':
-	# probe_sents('BabyAI-GoToLocal-v0_ppo_bow_endpool_res_gru_mem_seed1_21-04-25-22-57-07_pretrained_BabyAI-GoToLocal-v0_ppo_bow_endpool_res_gru_mem_seed4949_21-04-26-10-07-17_best')
-	probe_sents('BabyAI-GoToLocal-v0_ppo_pixels_endpool_res_gru_mem_seed1_21-04-26-22-11-26_best')
+	# probe_sents_babyai('Embodiment-PickupLocalColorSplits-v0_IL_pixels_endpool_res_attgru_seed1725081324_21-06-24-11-29-35_best')
+	probe_conv('Embodiment-PickupLocalColorSplits-v0_IL_pixels_endpool_res_attgru_seed1725081324_21-06-24-11-29-35_best')
+
+	# probe_sents_transformer_2objs()
