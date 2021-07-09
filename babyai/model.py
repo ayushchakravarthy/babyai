@@ -426,14 +426,15 @@ class gSCAN(nn.Module):
         # Instruction Encoder LSTM
         self.word_embedding = nn.Embedding(obs_space["instr"], 128)
         self.instr_rnn = nn.LSTM(
-            128, 128, batch_first=True,
+            input_size=128, hidden_size=128, batch_first=True,
             bidirectional=True, num_layers=self.num_encoder_layers)
         self.final_instr_dim = 128
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(128, 128)
         self.textual_attention = Attention(key_size=128, query_size=128, hidden_size=128)
 
-        self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
+        self.memory_rnn = nn.LSTM(input_size=self.image_dim, hidden_size=self.memory_dim,
+                                  num_layers=self.num_decoder_layers)
         self.embedding_size = self.memory_dim
 
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
@@ -609,12 +610,23 @@ class gSCAN(nn.Module):
         attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
 
         concat_input = torch.cat([context_command.transpose(0, 1),
-                                  context_situation.transpose(0, 1)], dim=2).squeeze(0)  # [batch_size, hidden_size*3]
+                                  context_situation.transpose(0, 1)], dim=2)  # [batch_size, hidden_size*3]
 
-        hidden = (last_hidden.squeeze(0), last_cell.squeeze(0))
+        hidden = (last_hidden, last_cell)
 
-        hidden = self.memory_rnn(concat_input, hidden)
-        embedding = hidden[0]
+        _, hidden = self.memory_rnn(concat_input, hidden)
+
+        # remove num_layers dimension from hidden output
+        (h_n, c_n) = hidden
+        h_n = h_n.squeeze(0)
+        c_n = c_n.squeeze(0)
+
+        # set embedding
+        embedding = h_n
+
+        # reconstitute back into tuple
+        hidden = (h_n, c_n)
+
         memory = torch.cat(hidden, dim=1)
         
         if hasattr(self, 'aux_info') and self.aux_info:
