@@ -569,7 +569,7 @@ class gSCAN(nn.Module):
         return encoder_message.clone(), encoder_message.clone()
 
 
-    def forward(self, obs, memory):
+    def forward(self, obs, memory, probe_attention=False):
         # compute encoder output
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
         encoder_output = self.encode_inputs(obs.instr, x)
