@@ -1,0 +1,252 @@
+__main__: 2021-07-08 10:36:34,287: LAST COMMIT INFO:
+__main__: 2021-07-08 10:36:34,288: commit e95feb69de901da00d3c7f66c40783168db86b2f
+Author: Ayush Chakravarthy <ayush.k.chakravarthy@gmail.com>
+Date:   Wed Jul 7 20:54:45 2021 +0530
+
+    model.py: completed attention, debugging remaining
+
+__main__: 2021-07-08 10:36:34,298: GIT DIFF:
+__main__: 2021-07-08 10:36:34,298: diff --git a/babyai/model.py b/babyai/model.py
+index b7748e5..0dfb917 100644
+--- a/babyai/model.py
++++ b/babyai/model.py
+@@ -399,14 +399,16 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
+ 
+ 
+ class gSCAN(nn.Module):
+-    def __init__(self, obs_space, action_space, encoder_hidden_size: int,
+-                 num_encoder_layers: int, num_decoder_layers: int, decoder_dropout_p: float,
+-                 decoder_hidden_size: int, cnn_hidden_num_channels: int, aux_info=None):
++    def __init__(self, obs_space, action_space,
++                 num_encoder_layers: int, num_decoder_layers: int, image_dim: int, aux_info=None):
+         super(gSCAN, self).__init__()
+     
+         self.obs_space = obs_space
+         self.aux_info = aux_info
+         self.num_decoder_layers = num_decoder_layers
++        self.num_encoder_layers = num_encoder_layers
++        self.memory_dim = 128
++        self.image_dim = image_dim
+ 
+         # Input: [batch_size, num_channels, image_height, image_width]
+         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
+@@ -417,35 +419,27 @@ class gSCAN(nn.Module):
+ 
+         # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
+         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
+-        self.visual_attention = Attention(key_size=cnn_hidden_num_channels * 3, query_size=decoder_hidden_size,
+-                                          hidden_size=decoder_hidden_size)
++        self.visual_attention = Attention(key_size=128 * 3, query_size=128,
++                                          hidden_size=128)
+ 
+ 
+         # Instruction Encoder LSTM
+-        self.num_encoder_layers = num_encoder_layers
+         self.word_embedding = nn.Embedding(obs_space["instr"], 128)
+         self.instr_rnn = nn.LSTM(
+             128, 128, batch_first=True,
+             bidirectional=True, num_layers=self.num_encoder_layers)
+         self.final_instr_dim = 128
+         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
+-        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
+-        self.textual_attention = Attention(key_size=encoder_hidden_size, query_size=decoder_hidden_size, hidden_size=decoder_hidden_size)
++        self.enc_hidden_to_dec_hidden = nn.Linear(128, 128)
++        self.textual_attention = Attention(key_size=128, query_size=128, hidden_size=128)
+ 
+         self.memory_rnn = nn.LSTMCell(self.image_dim, self.memory_dim)
+-        self.embedding_size = self.semi_memory_size
+-        self.enc_hidden_to_dec_hidden = nn.Linear(encoder_hidden_size, decoder_hidden_size)
++        self.embedding_size = self.memory_dim
+ 
+         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
+         # Input for attention: [batch_size, max_input_length, hidden_size],
+         #                      [batch_size, image_width * image_width, hidden_size]
+         # Output: [max_target_length, batch_size, target_vocabulary_size]
+-        self.attention_decoder = BahdanauAttentionDecoderRNN(hidden_size=decoder_hidden_size,
+-                                                             output_size=self.embedding_size,
+-                                                             num_layers=num_decoder_layers,
+-                                                             dropout_probability=decoder_dropout_p,
+-                                                             textual_attention=self.textual_attention,
+-                                                             visual_attention=self.visual_attention)
+                                                              
+         # Define actor's model
+         self.actor = nn.Sequential(
+@@ -506,13 +500,16 @@ class gSCAN(nn.Module):
+             raise ValueError('Could not add extra heads')
+ 
+     def _get_instr_embedding(self, instr):
++        # get lenghts and masks
+         lengths = (instr != 0).sum(1).long()
+         masks = (instr != 0).float()
+ 
++        # if reverse sorting is needed, reverse sort
+         if lengths.shape[0] > 1:
+             seq_lengths, perm_idx = lengths.sort(0, descending=True)
+             iperm_idx = torch.LongTensor(perm_idx.shape).fill_(0)
+             if instr.is_cuda: iperm_idx = iperm_idx.cuda()
++
+             for i, v in enumerate(perm_idx):
+                 iperm_idx[v.data] = i
+ 
+@@ -527,13 +524,20 @@ class gSCAN(nn.Module):
+             instr = instr[:, 0:lengths[0]]
+             outputs, final_states = self.instr_rnn(self.word_embedding(instr))
+             iperm_idx = None
++
+         final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
+         final_states = final_states.view(final_states.shape[0], self.num_encoder_layers, 2, -1) # [batch_size, num_layers, num_directions, hidden_size]
++
++        # sum backward and forward directions of LSTM
+         final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
++
++        # get the last layer
+         final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
++
+         if iperm_idx is not None:
+             outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, seq_len, 2 * hidden_size]
+             outputs = outputs.view(outputs.size(0), outputs.size(1), 2, -1)
++            # same for outputs
+             outputs = torch.sum(outputs, 2) # [batch_size, seq_len, hidden_size]
+             outputs = outputs.index_select(dim=0, index=iperm_idx)
+             final_states = final_states.index_select(dim=0, index=iperm_idx)
+@@ -554,10 +558,6 @@ class gSCAN(nn.Module):
+         outputs, final_state, command_lengths = self._get_instr_embedding(instr)
+         return {"encoded_image": encoded_image, "encoded_commands": outputs, "final_state": final_state, "command_lengths": command_lengths}
+     
+-    def decode_input(self, target_token, hidden, encoder_outputs, input_lengths, encoded_situations):
+-        return self.attention_decoder.forward_step(input_tokens=target_token, last_hidden=hidden,
+-                                                   encoded_commands=encoder_outputs, commands_lengths=input_lengths,
+-                                                   encoded_situations=encoded_situations)
+     
+     def decode_input_batched(self, target_batch, target_lengths,
+                              initial_hidden, encoded_commands,
+@@ -591,15 +591,17 @@ class gSCAN(nn.Module):
+ 
+         # get encoder outputs
+         initial_hidden = encoder_output["final_state"]
+-        encoded_commands = encoder_output["encoded_commands"]["encoder_outputs"]
++        encoded_commands = encoder_output["encoded_commands"]
+         command_lengths = encoder_output["command_lengths"]
+-        encoded_situations = encoder_output["encoded_situations"]
++        encoded_situations = encoder_output["encoded_image"]
++
++        print(command_lengths.shape)
+ 
+         # for efficiency
+         projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
+         projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
+ 
+-        hidden = self.attention_decoder.initialize_hidden(
++        hidden = self.initialize_hidden(
+             torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+         last_hidden, last_cell = hidden
+ 
+@@ -620,8 +622,13 @@ class gSCAN(nn.Module):
+         # Concatenate the context vector and RNN hidden state, and map to an output
+         attention_weights_commands = attention_weights_commands.squeeze(1)  # [batch_size, max_input_length]
+         attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
+-        concat_input = torch.cat([context_command.transpose(0, 1),
++        concat_input = torch.cat([memory,
++                                  context_command.transpose(0, 1),
+                                   context_situation.transpose(0, 1)], dim=2)  # [1, batch_size hidden_size*3]
++        print(concat_input.shape)
++        print(last_hidden.shape)
++        print(last_cell.shape)
++        exit()
+ 
+         hidden = (last_hidden, last_cell)
+ 
+diff --git a/output.txt b/output.txt
+index e69de29..d15792b 100644
+--- a/output.txt
++++ b/output.txt
+@@ -0,0 +1,7 @@
++__main__: 2021-07-08 10:36:34,287: LAST COMMIT INFO:
++__main__: 2021-07-08 10:36:34,288: commit e95feb69de901da00d3c7f66c40783168db86b2f
++Author: Ayush Chakravarthy <ayush.k.chakravarthy@gmail.com>
++Date:   Wed Jul 7 20:54:45 2021 +0530
++
++    model.py: completed attention, debugging remaining
++
+diff --git a/scripts/train_rl.py b/scripts/train_rl.py
+index c512308..59b4e4d 100755
+--- a/scripts/train_rl.py
++++ b/scripts/train_rl.py
+@@ -19,7 +19,7 @@ import babyai
+ import babyai.utils as utils
+ import babyai.rl
+ from babyai.arguments import ArgumentParser
+-from babyai.model import ACModel
++from babyai.model import ACModel, gSCAN
+ from babyai.evaluate import batch_evaluate
+ from babyai.utils.agent import ModelAgent
+ from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+@@ -51,6 +51,8 @@ parser.add_argument("--episodes", type=int, default=int(1e9),
+                     help="maximum number of episodes to train")
+ parser.add_argument("--warmup", type=int, default=0,
+                     help="number of initial validations to not lose patience")
++parser.add_argument("--acmodel", type=str, default="default",
++                    help="model to use")
+ args = parser.parse_args()
+ 
+ utils.seed(args.seed)
+@@ -95,9 +97,14 @@ if acmodel is None:
+     if args.pretrained_model:
+         acmodel = utils.load_model(args.pretrained_model, raise_not_found=True)
+     else:
+-        acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
+-                          args.image_dim, args.memory_dim, args.instr_dim,
+-                          not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
++        if args.acmodel == "gscan":
++            acmodel = gSCAN(obss_preprocessor.obs_space, envs[0].action_space,
++                            2, 2, args.image_dim)
++        else:
++            acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
++                              args.image_dim, args.memory_dim, args.instr_dim,
++                              not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
++
+ 
+ 
+ if obss_preprocessor.vocab is not None:
+
+__main__: 2021-07-08 10:36:34,298: COMMAND LINE ARGS:
+__main__: 2021-07-08 10:36:34,298: Namespace(acmodel='gscan', algo='ppo', arch='bow_endpool_res', batch_size=1280, beta1=0.9, beta2=0.999, clip_eps=0.2, discount=0.99, entropy_coef=0.01, env='BabyAI-GoToLocal-v0', episodes=1000000000, epoch_length=0, epochs=1000000, finetune_transformer=False, frames=90000000000, frames_per_proc=40, gae_lambda=0.99, image_dim=128, instr_arch='gru', instr_dim=128, log_interval=10, lr=0.0001, max_grad_norm=0.5, memory_dim=128, model='BabyAI-GoToLocal-v0_ppo_bow_endpool_res_gru_mem_seed1583983379_21-07-08-10-36-34', no_instr=False, no_mem=False, optim_alpha=0.99, optim_eps=1e-05, patience=100, ppo_epochs=4, pretrained_model=None, procs=64, recurrence=20, reward_scale=20.0, save_interval=50, seed=1583983379, task_id_seed=False, tb=False, val_episodes=500, val_interval=1, val_seed=1000000000, value_loss_coef=0.5, warmup=0)
+__main__: 2021-07-08 10:36:34,299: CUDA available: False
+__main__: 2021-07-08 10:36:34,299: gSCAN(
+  (situation_encoder): ConvolutionalNet(
+    (conv_1): Conv2d(3, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (conv_2): Conv2d(3, 128, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    (conv_3): Conv2d(3, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (dropout): Dropout(p=0.5, inplace=False)
+    (relu): ReLU()
+    (layers): Sequential(
+      (0): ReLU()
+      (1): Dropout(p=0.5, inplace=False)
+    )
+  )
+  (visual_attention): Attention(
+    (key_layer): Linear(in_features=384, out_features=128, bias=False)
+    (query_layer): Linear(in_features=128, out_features=128, bias=False)
+    (energy_layer): Linear(in_features=128, out_features=1, bias=False)
+  )
+  (word_embedding): Embedding(100, 128)
+  (instr_rnn): LSTM(128, 128, num_layers=2, batch_first=True, bidirectional=True)
+  (enc_hidden_to_dec_hidden): Linear(in_features=128, out_features=128, bias=True)
+  (textual_attention): Attention(
+    (key_layer): Linear(in_features=128, out_features=128, bias=False)
+    (query_layer): Linear(in_features=128, out_features=128, bias=False)
+    (energy_layer): Linear(in_features=128, out_features=1, bias=False)
+  )
+  (memory_rnn): LSTMCell(128, 128)
+  (actor): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=64, out_features=7, bias=True)
+  )
+  (critic): Sequential(
+    (0): Linear(in_features=128, out_features=64, bias=True)
+    (1): Tanh()
+    (2): Linear(in_features=64, out_features=1, bias=True)
+  )
+)
+torch.Size([64])

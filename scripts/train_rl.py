@@ -19,7 +19,7 @@ import babyai
 import babyai.utils as utils
 import babyai.rl
 from babyai.arguments import ArgumentParser
-from babyai.model import ACModel
+from babyai.model import ACModel, gSCAN
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper
@@ -51,6 +51,8 @@ parser.add_argument("--episodes", type=int, default=int(1e9),
                     help="maximum number of episodes to train")
 parser.add_argument("--warmup", type=int, default=0,
                     help="number of initial validations to not lose patience")
+parser.add_argument("--acmodel", type=str, default="default",
+                    help="model to use")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -95,9 +97,14 @@ if acmodel is None:
     if args.pretrained_model:
         acmodel = utils.load_model(args.pretrained_model, raise_not_found=True)
     else:
-        acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
-                          args.image_dim, args.memory_dim, args.instr_dim,
-                          not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
+        if args.acmodel == "gscan":
+            acmodel = gSCAN(obss_preprocessor.obs_space, envs[0].action_space,
+                            2, 1, args.image_dim)
+        else:
+            acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
+                              args.image_dim, args.memory_dim, args.instr_dim,
+                              not args.no_instr, args.instr_arch, not args.no_mem, args.arch)
+
 
 
 if obss_preprocessor.vocab is not None:

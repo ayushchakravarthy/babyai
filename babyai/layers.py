@@ -390,6 +390,7 @@ class Attention(nn.Module):
         """
         batch_size = projected_keys.size(0)
         assert len(memory_lengths) == batch_size
+        # memory_lengths = memory_lengths.clone().detach().long().to(device)
         memory_lengths = torch.tensor(memory_lengths, dtype=torch.long, device=device)
 
         # Project queries down to the correct dimension.
