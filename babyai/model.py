@@ -628,13 +628,4 @@ class gSCAN(nn.Module):
         x = self.critic(embedding)
         value = x.squeeze(1)
 
-        """
-        TODO List:
-        1. Bahdanau textual and visual attention from layers.py
-        2. Concatenation and use memory rnn setup from above
-        3. setup actor critic passes and outputs
-
-        Side: Maybe have to implement other functions
-        """
-        
         return {'dist': dist, 'value': value, 'memory': memory, 'extra_predictions': extra_predictions}
