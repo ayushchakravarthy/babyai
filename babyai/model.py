@@ -417,9 +417,9 @@ class gSCAN(nn.Module):
                                                  num_conv_channels=128,
                                                  dropout_probability=0.5)
 
-        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 3]
+        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 5]
         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
-        self.visual_attention = Attention(key_size=128 * 3, query_size=128,
+        self.visual_attention = Attention(key_size=128 * 5, query_size=128,
                                           hidden_size=128)
 
 
@@ -433,8 +433,7 @@ class gSCAN(nn.Module):
         self.enc_hidden_to_dec_hidden = nn.Linear(128, 128)
         self.textual_attention = Attention(key_size=128, query_size=128, hidden_size=128)
 
-        self.memory_rnn = nn.LSTM(input_size=self.image_dim, hidden_size=self.memory_dim,
-                                  num_layers=self.num_decoder_layers)
+        self.memory_rnn = nn.LSTMCell(input_size=self.image_dim, hidden_size=self.memory_dim)
         self.embedding_size = self.memory_dim
 
         # Input: [batch_size, max_target_length], initial hidden: ([batch_size, hidden_size], [batch_size, hidden_size])
@@ -610,22 +609,12 @@ class gSCAN(nn.Module):
         attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
 
         concat_input = torch.cat([context_command.transpose(0, 1),
-                                  context_situation.transpose(0, 1)], dim=2)  # [batch_size, hidden_size*3]
+                                  context_situation.transpose(0, 1)], dim=2).squeeze(0)  # [batch_size, hidden_size*3]
 
-        hidden = (last_hidden, last_cell)
+        hidden = (last_hidden.squeeze(0), last_cell.squeeze(0))
 
-        _, hidden = self.memory_rnn(concat_input, hidden)
-
-        # remove num_layers dimension from hidden output
-        (h_n, c_n) = hidden
-        h_n = h_n.squeeze(0)
-        c_n = c_n.squeeze(0)
-
-        # set embedding
-        embedding = h_n
-
-        # reconstitute back into tuple
-        hidden = (h_n, c_n)
+        hidden = self.memory_rnn(concat_input, hidden)
+        embedding = hidden[0]
 
         memory = torch.cat(hidden, dim=1)
         

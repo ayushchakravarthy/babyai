@@ -73,6 +73,7 @@ instr = args.instr_arch if args.instr_arch else "noinstr"
 mem = "mem" if not args.no_mem else "nomem"
 model_name_parts = {
     'env': args.env,
+    'acmodel': args.acmodel,
     'algo': args.algo,
     'arch': args.arch,
     'instr': instr,
