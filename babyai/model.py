@@ -7,7 +7,7 @@ from torch.distributions.categorical import Categorical
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from babyai.rl.utils.supervised_losses import required_heads
 from babyai.layers import Encoder, Gate, clones, ReAttention
-from babyai.layers import ConvolutionalNet
+from babyai.layers import ConvolutionalNet, ConvNet
 from babyai.layers import Attention, BahdanauAttentionDecoderRNN
 
 
@@ -299,7 +299,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         if 'pixel' in self.arch:
             x /= 256.0
-
+        
         x = self.image_conv(x)
 
         if self.use_instr and not self.use_attention:
@@ -412,14 +412,19 @@ class gSCAN(nn.Module):
 
         # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
-        self.situation_encoder = ConvolutionalNet(num_channels=3,
-                                                 cnn_kernel_size=3,
-                                                 num_conv_channels=128,
-                                                 dropout_probability=0.5)
+        # self.situation_encoder = ConvolutionalNet(num_channels=3,
+        #                                          cnn_kernel_size=3,
+        #                                          num_conv_channels=128,
+        #                                          dropout_probability=0.5)
 
-        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels * 5]
+        # Input: [batch_size, num_channels, image_height, image_width]
+        # Output: [batch_size, image_height * image_width, num_conv_channels]
+        self.situation_encoder = ConvNet(in_channels=3,
+                                         out_channels=128)
+
+        # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels]
         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
-        self.visual_attention = Attention(key_size=128 * 5, query_size=128,
+        self.visual_attention = Attention(key_size=self.situation_encoder.output_dim, query_size=128,
                                           hidden_size=128)
 
 
@@ -572,6 +577,7 @@ class gSCAN(nn.Module):
     def forward(self, obs, memory, probe_attention=False):
         # compute encoder output
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
+        x /= 256.0
         encoder_output = self.encode_inputs(obs.instr, x)
 
         # get encoder outputs

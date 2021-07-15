@@ -289,6 +289,38 @@ class ConvolutionalNet(nn.Module):
         images_features = self.layers(images_features)
         return images_features.reshape(batch_size, image_dimension * image_dimension, num_channels)
 
+class ConvNet(nn.Module):
+    def __init__(
+        self, 
+        in_channels: int,
+        out_channels: int
+    ):
+        super(ConvNet, self).__init__()
+        self.output_dim = out_channels
+
+        self.image_conv = nn.Sequential(*[
+            nn.Conv2d(in_channels=in_channels, out_channels=128, kernel_size=(8, 8),
+            stride=8, padding=0),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3),
+            stride=1, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=2),
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=2),
+            nn.Conv2d(in_channels=128, out_channels=out_channels, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(out_channels)
+        ])
+    def forward(self, input_image):
+        batch_size = input_image.size(0)
+
+        image_features = self.image_conv(input_image)
+        _, num_channels, _, image_dim = image_features.size()
+        image_features = image_features.reshape(batch_size, image_dim * image_dim, num_channels)
+        return image_features
+
 class DownSamplingConvolutionalNet(nn.Module):
     """TODO: make more general and describe"""
     def __init__(self, num_channels: int, num_conv_channels: int, dropout_probability: float):
