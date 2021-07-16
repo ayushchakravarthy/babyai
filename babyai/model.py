@@ -436,6 +436,8 @@ class gSCAN(nn.Module):
         self.final_instr_dim = 128
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(128, 128)
+        self.queries_to_keys = nn.Linear(256, 128)
+        self.count = 0
         self.textual_attention = Attention(key_size=128, query_size=128, hidden_size=128)
 
         self.memory_rnn = nn.LSTMCell(input_size=self.image_dim, hidden_size=self.memory_dim)
@@ -505,6 +507,10 @@ class gSCAN(nn.Module):
             raise ValueError('Could not add extra heads')
 
     def _get_instr_embedding(self, instr):
+        # TODO:
+        # 1. enable pre-trained transformer
+
+
         # get lenghts and masks
         lengths = (instr != 0).sum(1).long()
         masks = (instr != 0).float()
@@ -559,6 +565,8 @@ class gSCAN(nn.Module):
 
 
     def encode_inputs(self, instr, visual_input):
+        # TODO:
+        # 1. BOW embedding
         encoded_image = self.situation_encoder(visual_input)
         outputs, final_state, command_lengths = self._get_instr_embedding(instr)
         return {"encoded_image": encoded_image, "encoded_commands": outputs, "final_state": final_state, "command_lengths": command_lengths}
@@ -575,6 +583,10 @@ class gSCAN(nn.Module):
 
 
     def forward(self, obs, memory, probe_attention=False):
+        # TODO: 
+        # 1. have to figure out memory mechanism (ask Jake)
+        # 2. conditional attention
+        
         # compute encoder output
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
         x /= 256.0
@@ -589,9 +601,14 @@ class gSCAN(nn.Module):
         # for efficiency
         projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
         projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
+        
+        if self.count == 0:
+            hidden = self.initialize_hidden(
+                torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+        else:
+            hidden = (memory[:, :self.semi_memory_size].unsqueeze(0), memory[:, self.semi_memory_size:].unsqueeze(0))
+        self.count += 1
 
-        hidden = self.initialize_hidden(
-            torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
         last_hidden, last_cell = hidden
         
         # context_command [bsz, 1, value_dim]
@@ -602,7 +619,9 @@ class gSCAN(nn.Module):
         batch_size, image_num_memory, _ = projected_keys_visual.size()
         situation_lengths = [image_num_memory for _ in range(batch_size)]
 
-        queries = last_hidden.transpose(0, 1)
+        queries = torch.cat([last_hidden.transpose(0, 1), context_command], dim=-1)
+        queries = self.queries_to_keys(queries)
+        queries = torch.tanh(queries)
 
         # context : [batch_size, 1, hidden_size]
         # attention_weights : [batch_size, 1, max_input_length]
