@@ -324,7 +324,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         if self.use_memory:
             hidden = (memory[:, :self.semi_memory_size], memory[:, self.semi_memory_size:])
-            print(hidden[0].shape, hidden[1].shape)
             hidden = self.memory_rnn(x, hidden)
             embedding = hidden[0]
             memory = torch.cat(hidden, dim=1)
@@ -583,10 +582,6 @@ class gSCAN(nn.Module):
 
 
     def forward(self, obs, memory, probe_attention=False):
-        # TODO: 
-        # 1. have to figure out memory mechanism (ask Jake)
-        # 2. conditional attention
-        
         # compute encoder output
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
         x /= 256.0
@@ -602,11 +597,13 @@ class gSCAN(nn.Module):
         projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
         projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
         
-        if self.count == 0:
+        if self.count % 20 == 0:
             hidden = self.initialize_hidden(
                 torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+            print('encoder hidden')
         else:
             hidden = (memory[:, :self.semi_memory_size].unsqueeze(0), memory[:, self.semi_memory_size:].unsqueeze(0))
+            print('memory hidden')
         self.count += 1
 
         last_hidden, last_cell = hidden
@@ -619,6 +616,7 @@ class gSCAN(nn.Module):
         batch_size, image_num_memory, _ = projected_keys_visual.size()
         situation_lengths = [image_num_memory for _ in range(batch_size)]
 
+        # setup visual attention queries conditioned on textual attention
         queries = torch.cat([last_hidden.transpose(0, 1), context_command], dim=-1)
         queries = self.queries_to_keys(queries)
         queries = torch.tanh(queries)
@@ -634,7 +632,7 @@ class gSCAN(nn.Module):
         attention_weights_situations = attention_weights_situations.squeeze(1)  # [batch_size, im_dim * im_dim]
 
         concat_input = torch.cat([context_command.transpose(0, 1),
-                                  context_situation.transpose(0, 1)], dim=2).squeeze(0)  # [batch_size, hidden_size*3]
+                                  context_situation.transpose(0, 1)], dim=2).squeeze(0)  # [batch_size, hidden_size*2]
 
         hidden = (last_hidden.squeeze(0), last_cell.squeeze(0))
 
