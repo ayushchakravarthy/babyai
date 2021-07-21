@@ -100,7 +100,8 @@ if acmodel is None:
     else:
         if args.acmodel == "gscan":
             acmodel = gSCAN(obss_preprocessor.obs_space, envs[0].action_space,
-                            2, 1, args.image_dim)
+                            2, args.image_dim, args.memory_dim, args.instr_dim,
+                            args.instr_arch, finetune_transformer=args.finetune_transformer)
         else:
             acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
                               args.image_dim, args.memory_dim, args.instr_dim,

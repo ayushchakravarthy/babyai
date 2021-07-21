@@ -399,15 +399,44 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
 class gSCAN(nn.Module):
     def __init__(self, obs_space, action_space,
-                 num_encoder_layers: int, num_decoder_layers: int, image_dim: int, aux_info=None):
+                 num_encoder_layers, image_dim=128, memory_dim=128,
+                 instr_dim=128, lang_model='lstm', aux_info=None, finetune_transformer=False):
         super(gSCAN, self).__init__()
     
         self.obs_space = obs_space
         self.aux_info = aux_info
-        self.num_decoder_layers = num_decoder_layers
+        self.num_decoder_layers = 1
         self.num_encoder_layers = num_encoder_layers
-        self.memory_dim = 128
+        self.memory_dim = memory_dim
+        self.instr_dim = instr_dim
         self.image_dim = image_dim * 2
+        self.lang_model = lang_model
+
+        if self.lang_model == 'transformer':
+            self.use_transformer = True
+            self.instr_dim = 768
+            if finetune_transformer:
+                self.instr_rnn = transformers.DistilBertForMaskedLM.from_pretrained('distilbert-base-uncased')
+            else:
+                self.instr_rnn = transformers.DistilBertForMaskedLM.from_pretrained('distilbert-base-uncased').requires_grad_(False)
+            self.final_instr_dim = self.instr_dim
+            self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
+        else:
+            self.use_transformer = False
+            if self.lang_model == 'lstm':
+                # Instruction Encoder LSTM
+                self.word_embedding = nn.Embedding(obs_space["instr"], self.instr_dim)
+                self.instr_rnn = nn.LSTM(
+                    input_size=self.instr_dim, hidden_size=128, batch_first=True,
+                    bidirectional=True, num_layers=self.num_encoder_layers)
+                self.final_instr_dim = self.instr_dim
+
+        # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
+        self.enc_hidden_to_dec_hidden = nn.Linear(self.final_instr_dim, 128)
+        self.queries_to_keys = nn.Linear(256, 128)
+        # self.count = 0
+        self.textual_attention = Attention(key_size=30522 if self.use_transformer else 128, query_size=128, hidden_size=128)
+
 
         # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels * 3]
@@ -426,18 +455,6 @@ class gSCAN(nn.Module):
         self.visual_attention = Attention(key_size=self.situation_encoder.output_dim, query_size=128,
                                           hidden_size=128)
 
-
-        # Instruction Encoder LSTM
-        self.word_embedding = nn.Embedding(obs_space["instr"], 128)
-        self.instr_rnn = nn.LSTM(
-            input_size=128, hidden_size=128, batch_first=True,
-            bidirectional=True, num_layers=self.num_encoder_layers)
-        self.final_instr_dim = 128
-        # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
-        self.enc_hidden_to_dec_hidden = nn.Linear(128, 128)
-        self.queries_to_keys = nn.Linear(256, 128)
-        self.count = 0
-        self.textual_attention = Attention(key_size=128, query_size=128, hidden_size=128)
 
         self.memory_rnn = nn.LSTMCell(input_size=self.image_dim, hidden_size=self.memory_dim)
         self.embedding_size = self.memory_dim
@@ -509,50 +526,56 @@ class gSCAN(nn.Module):
         # TODO:
         # 1. enable pre-trained transformer
 
+        if self.lang_model == 'lstm':
+            # get lenghts and masks
+            lengths = (instr != 0).sum(1).long()
+            masks = (instr != 0).float()
 
-        # get lenghts and masks
-        lengths = (instr != 0).sum(1).long()
-        masks = (instr != 0).float()
+            # if reverse sorting is needed, reverse sort
+            if lengths.shape[0] > 1:
+                seq_lengths, perm_idx = lengths.sort(0, descending=True)
+                iperm_idx = torch.LongTensor(perm_idx.shape).fill_(0)
+                if instr.is_cuda: iperm_idx = iperm_idx.cuda()
 
-        # if reverse sorting is needed, reverse sort
-        if lengths.shape[0] > 1:
-            seq_lengths, perm_idx = lengths.sort(0, descending=True)
-            iperm_idx = torch.LongTensor(perm_idx.shape).fill_(0)
-            if instr.is_cuda: iperm_idx = iperm_idx.cuda()
+                for i, v in enumerate(perm_idx):
+                    iperm_idx[v.data] = i
 
-            for i, v in enumerate(perm_idx):
-                iperm_idx[v.data] = i
+                inputs = self.word_embedding(instr)
+                inputs = inputs[perm_idx]
 
-            inputs = self.word_embedding(instr)
-            inputs = inputs[perm_idx]
+                inputs = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
 
-            inputs = pack_padded_sequence(inputs, seq_lengths.data.cpu().numpy(), batch_first=True)
+                outputs, (final_states, cell) = self.instr_rnn(inputs)
+                # final_states [num_layers * num_directions, batch_size, hidden_size]
+            else:
+                instr = instr[:, 0:lengths[0]]
+                outputs, final_states = self.instr_rnn(self.word_embedding(instr))
+                iperm_idx = None
 
-            outputs, (final_states, cell) = self.instr_rnn(inputs)
-            # final_states [num_layers * num_directions, batch_size, hidden_size]
-        else:
-            instr = instr[:, 0:lengths[0]]
-            outputs, final_states = self.instr_rnn(self.word_embedding(instr))
-            iperm_idx = None
+            final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
+            final_states = final_states.view(final_states.shape[0], self.num_encoder_layers, 2, -1) # [batch_size, num_layers, num_directions, hidden_size]
 
-        final_states = final_states.transpose(0, 1).contiguous() # [batch_size, num_layers * num_directions, hidden_size]
-        final_states = final_states.view(final_states.shape[0], self.num_encoder_layers, 2, -1) # [batch_size, num_layers, num_directions, hidden_size]
+            # sum backward and forward directions of LSTM
+            final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
 
-        # sum backward and forward directions of LSTM
-        final_states = torch.sum(final_states, 2) # [batch_size, num_layers, hidden_size]
+            # get the last layer
+            final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
 
-        # get the last layer
-        final_states = final_states[:, -1, :] # [batch_size, hidden_size] (get last layer)
+            if iperm_idx is not None:
+                outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, seq_len, 2 * hidden_size]
+                outputs = outputs.view(outputs.size(0), outputs.size(1), 2, -1)
+                # same for outputs
+                outputs = torch.sum(outputs, 2) # [batch_size, seq_len, hidden_size]
+                encoded_commands = outputs.index_select(dim=0, index=iperm_idx)
+                final_states = final_states.index_select(dim=0, index=iperm_idx)
 
-        if iperm_idx is not None:
-            outputs, _ = pad_packed_sequence(outputs, batch_first=True) # [batch_size, seq_len, 2 * hidden_size]
-            outputs = outputs.view(outputs.size(0), outputs.size(1), 2, -1)
-            # same for outputs
-            outputs = torch.sum(outputs, 2) # [batch_size, seq_len, hidden_size]
-            outputs = outputs.index_select(dim=0, index=iperm_idx)
-            final_states = final_states.index_select(dim=0, index=iperm_idx)
-
-        return outputs, final_states, lengths
+            return encoded_commands, final_states, lengths
+        elif self.lang_model == 'transformer':
+            lengths = (instr.attention_mask != 0).sum(1).long()
+            outputs = self.instr_rnn(**instr, output_hidden_states=True)
+            encoded_commands = F.softmax(outputs.logits, dim=2)
+            last_hidden_state = outputs.hidden_states[-1]
+            return encoded_commands, last_hidden_state, lengths 
 
     @property
     def memory_size(self):
@@ -564,11 +587,10 @@ class gSCAN(nn.Module):
 
 
     def encode_inputs(self, instr, visual_input):
-        # TODO:
-        # 1. BOW embedding
+        # TODO: BOW embedding
         encoded_image = self.situation_encoder(visual_input)
-        outputs, final_state, command_lengths = self._get_instr_embedding(instr)
-        return {"encoded_image": encoded_image, "encoded_commands": outputs, "final_state": final_state, "command_lengths": command_lengths}
+        encoded_commands, final_state, command_lengths = self._get_instr_embedding(instr)
+        return {"encoded_image": encoded_image, "encoded_commands": encoded_commands, "final_state": final_state, "command_lengths": command_lengths}
     
     
     def initialize_hidden(self, encoder_message):
@@ -593,18 +615,29 @@ class gSCAN(nn.Module):
         command_lengths = encoder_output["command_lengths"]
         encoded_situations = encoder_output["encoded_image"]
 
+        if self.lang_model == 'transformer':
+            mask = obs.instr.attention_mask.float()
+
+            mask = mask[:, :initial_hidden.shape[1]]
+            initial_hidden = initial_hidden[:, :mask.shape[1]]
+            keys = self.memory2key(memory)
+            pre_softmax = (keys[:, None, :] * initial_hidden).sum(2) + 1000 * mask
+            attention = F.softmax(pre_softmax, dim=1)
+            initial_hidden = (initial_hidden * attention[:, :, None]).sum(1)
+
         # for efficiency
         projected_keys_visual = self.visual_attention.key_layer(encoded_situations)
         projected_keys_textual = self.textual_attention.key_layer(encoded_commands)
         
-        if self.count % 20 == 0:
-            hidden = self.initialize_hidden(
-                torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
-            print('encoder hidden')
-        else:
-            hidden = (memory[:, :self.semi_memory_size].unsqueeze(0), memory[:, self.semi_memory_size:].unsqueeze(0))
-            print('memory hidden')
-        self.count += 1
+        # if self.count % 20 == 0:
+        #     hidden = self.initialize_hidden(
+        #         torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
+        # else:
+        #     hidden = (memory[:, :self.semi_memory_size].unsqueeze(0), memory[:, self.semi_memory_size:].unsqueeze(0))
+        # self.count += 1
+
+        hidden = self.initialize_hidden(
+            torch.tanh(self.enc_hidden_to_dec_hidden(initial_hidden)))
 
         last_hidden, last_cell = hidden
         
