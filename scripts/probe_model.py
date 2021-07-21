@@ -11,6 +11,7 @@ import numpy as np
 import gym
 import subprocess
 from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 from adjustText import adjust_text
@@ -38,11 +39,27 @@ def load_model(model):
 def probe_vocab(model):
 	vocab, acmodel = load_model(model)
 	ipt = list(vocab.values())
-	embs = acmodel.word_embedding(torch.tensor(ipt, device = torch.device('cuda')))
+	embs = acmodel.to('cuda').word_embedding(torch.tensor(ipt, device = torch.device('cuda')))
 	embs = np.squeeze(embs.cpu().detach().numpy())
+	visualize_embs(embs, vocab)
+	
 
+def probe_vocab_from_model(model):
+	vocab = utils.get_vocab_path(model)
+	with open(vocab) as jin:
+		vocab = json.load(jin)
+	embs = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').to('cuda').get_input_embeddings()
+	ipt = list(vocab.values())
+	embs = embs(torch.tensor(ipt, device = torch.device('cuda'))).cpu().detach().numpy()
+	visualize_embs(embs, vocab)
+
+
+def visualize_embs(embs, vocab):
 	pca = PCA(n_components = 2)
 	red = pca.fit_transform(embs)
+
+	# tsne = TSNE(n_components = 2, perplexity = 30, learning_rate = 20, n_iter = 5000)
+	# red = tsne.fit_transform(embs)
 
 	fig,ax = plt.subplots(figsize = (12,12))
 	X = red[:,0]
@@ -51,6 +68,7 @@ def probe_vocab(model):
 	for i, n in enumerate(vocab.keys()):
 		ax.scatter(X[i], Y[i], s = 30, c = 'blue', alpha = 1)
 		annotations.append(ax.text(X[i], Y[i], n, fontsize = 12, alpha = 1))
+	adjust_text(annotations)
 
 	fig.tight_layout()
 
@@ -59,7 +77,7 @@ def probe_vocab(model):
 
 def probe_sents_transformer():
 	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
-	combs = itertools.product(['a', 'the'], colors, ['key', 'box', 'ball'])
+	combs = itertools.product(['a', 'the'], ['key', 'box', 'ball'])
 	commands = [['pick', 'up'], ['go', 'to']]
 	sents = [cmd + list(c) for c in combs for cmd in commands]
 
@@ -71,7 +89,7 @@ def probe_sents_transformer():
 
 	fdict = tokenizer(sents, return_tensors = 'pt', padding = True).to(torch.device('cuda'))
 	embs = model(**fdict).last_hidden_state
-	embs = np.take(embs.cpu().detach().numpy(), 5, axis = 1)
+	embs = np.take(embs.cpu().detach().numpy(), 3, axis = 1)
 
 	plot_embs(embs, sents)
 
@@ -101,12 +119,13 @@ def probe_sents_transformer_2objs():
 
 def probe_sents_babyai(model):
 	colors = ['grey', 'green', 'purple', 'yellow', 'blue', 'red']
-	combs = itertools.product(['a', 'the'], colors, ['key', 'box', 'ball'])
-	sents = [['pick', 'up'] + list(c) for c in combs]
+	combs = itertools.product(['a', 'the'], ['key', 'box', 'ball'])
+	commands = [['pick', 'up'], ['go', 'to']]
+	sents = [cmd + list(c) for c in combs for cmd in commands]
 
 	vocab, acmodel = load_model(model)
 	ipt = np.array([[vocab[w] for w in sent] for sent in sents])
-	sentlabels = [' '.join(sent[-3:]) for sent in sents]
+	sentlabels = [' '.join(sent) for sent in sents]
 
 	embs = acmodel.word_embedding(torch.tensor(ipt, device = torch.device('cuda')))
 	embs = acmodel.instr_rnn(embs)[0]
@@ -162,7 +181,7 @@ def plot_embs(embs, sentlabels, colorlabels = None):
 		ax.scatter(X[i], Y[i], marker = mkr, s = 30, color = COLORS[clr]/255, alpha = 1)
 		annotations.append(ax.text(X[i], Y[i], n, color = COLORS[clr]/255, fontsize = 12, alpha = 1))
 
-	# adjust_text(annotations)
+	adjust_text(annotations)
 
 	fig.tight_layout()
 
@@ -188,7 +207,8 @@ def sents_color_linreg(model):
 
 
 if __name__ == '__main__':
-	# probe_sents_babyai('Embodiment-PickupLocalColorSplits-v0_IL_pixels_endpool_res_attgru_seed1725081324_21-06-24-11-29-35_best')
-	probe_conv('Embodiment-PickupLocalColorSplits-v0_IL_pixels_endpool_res_attgru_seed1725081324_21-06-24-11-29-35_best')
+	probe_sents_babyai('Embodiment-PickupGotoLocalShapeSplits-v0_ppo_pixels_endpool_res_attgru_mem_seed467699879_21-06-08-19-01-41_best') 
+	# probe_vocab('BabyAI-BossLevel-v0_IL_pixels_endpool_res_attgru_seed616214275_21-07-09-11-36-41_best')
+	# probe_sents_transformer()
 
 	# probe_sents_transformer_2objs()

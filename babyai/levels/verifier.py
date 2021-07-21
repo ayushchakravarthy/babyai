@@ -44,8 +44,8 @@ class ObjDesc:
     """
 
     def __init__(self, type, color=None, loc=None):
-        assert type in [None, *OBJ_TYPES], type
-        assert color in [None, *COLOR_NAMES], color
+        # assert type in [None, *OBJ_TYPES], type
+        # assert color in [None, *COLOR_NAMES], color
         assert loc in [None, *LOC_NAMES], loc
 
         self.color = color

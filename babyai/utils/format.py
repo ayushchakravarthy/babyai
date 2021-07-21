@@ -7,6 +7,7 @@ import babyai.rl
 import transformers
 
 from .. import utils
+from gym_minigrid.minigrid import GeneralObj
 
 
 def get_vocab_path(model_name):
@@ -14,18 +15,21 @@ def get_vocab_path(model_name):
 
 def select_obss_preprocessor(model_name, obs_space = None, pretrained_model = None):
     if 'emb' in model_name:
-        obss_preprocessor = utils.IntObssPreprocessor(model_name, obs_space, pretrained_model)
+        obss_preprocessor = IntObssPreprocessor(model_name, obs_space, pretrained_model)
     elif 'transformer' in model_name:
-        obss_preprocessor = utils.TransformerObssPreprocessor(obs_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), 'pixels' or 'bow' in model_name)
+        obss_preprocessor = TransformerObssPreprocessor(obs_space, transformers.DistilBertTokenizer.from_pretrained('distilbert-base-uncased'), 'pixels' in model_name)
+    elif 'matchwords' in model_name:
+        obss_preprocessor = ExtendedBOWObssPreprocessor(model_name, obs_space, pretrained_model)
+        GeneralObj.load_vocab(obss_preprocessor.vocab)
     else:
-        obss_preprocessor = utils.ObssPreprocessor(model_name, obs_space, pretrained_model)
+        obss_preprocessor = ObssPreprocessor(model_name, obs_space, pretrained_model)
     return obss_preprocessor
 
 
 class Vocabulary:
     def __init__(self, model_name):
         self.path = get_vocab_path(model_name)
-        self.max_size = 100
+        self.max_size = 1000
         if os.path.exists(self.path):
             self.vocab = json.load(open(self.path))
         else:
@@ -37,6 +41,9 @@ class Vocabulary:
                 raise ValueError("Maximum vocabulary capacity reached")
             self.vocab[token] = len(self.vocab) + 1
         return self.vocab[token]
+
+    def items(self):
+        return self.vocab.items()
 
     def save(self, path=None):
         if path is None:
@@ -106,6 +113,12 @@ class IntImagePreprocessor(object):
         images = torch.tensor(images, device=device, dtype=torch.long)
         return images
 
+class WordsImagePreprocessor(object):
+    def __call__(self, obss, device = None):
+        images = numpy.array([obs["image"] for obs in obss])
+        images = torch.tensor(images, device=device, dtype=torch.long)
+        return images
+
 
 class ObssPreprocessor:
     def __init__(self, model_name, obs_space=None, load_vocab_from=None):
@@ -152,6 +165,26 @@ class IntObssPreprocessor(object):
 
         return obs_
 
+class ExtendedBOWObssPreprocessor:
+    def __init__(self, model_name, obs_space=None, load_vocab_from=None):
+        self.image_preproc = WordsImagePreprocessor()
+        self.instr_preproc = InstructionsPreprocessor(model_name, load_vocab_from)
+        self.vocab = self.instr_preproc.vocab
+        self.obs_space = {
+            "image": self.vocab.max_size,
+            "instr": self.vocab.max_size
+        }
+
+    def __call__(self, obss, device=None):
+        obs_ = babyai.rl.DictList()
+
+        if "image" in self.obs_space.keys():
+            obs_.image = self.image_preproc(obss, device=device)
+
+        if "instr" in self.obs_space.keys():
+            obs_.instr = self.instr_preproc(obss, device=device)
+
+        return obs_
 
 class TransformerObssPreprocessor(object):
     def __init__(self, obs_space, tokenizer, use_pixels):
@@ -166,9 +199,11 @@ class TransformerObssPreprocessor(object):
                 "instr": self.tokenizer.vocab_size
             }
         else:
-            self.image_preproc = IntImagePreprocessor(image_obs_space.shape[-1], max_high=image_obs_space.high.max())
+            if GeneralObj.vocab is None:
+                GeneralObj.load_vocab(self.tokenizer.get_vocab())
+            self.image_preproc = WordsImagePreprocessor()
             self.obs_space = {
-                "image": self.image_preproc.max_size,
+                "image": self.tokenizer.vocab_size,
                 "instr": self.tokenizer.vocab_size
             }
         

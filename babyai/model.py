@@ -63,14 +63,23 @@ class ImageBOWEmbedding(nn.Module):
        return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
 
 
-class ImageBOWEmbeddingPretrained(nn.Module):
-    def __init__(self, pretrained_model):
+class ImageBOWEmbeddingMatched(nn.Module):
+    def __init__(self, embedding):
         super().__init__()
-        self.embedding = pretrained_model.get_input_embeddings()
-        # self.apply(initialize_parameters)
+        self.embedding = embedding
 
     def forward(self, inputs):
-        return self.embedding(inputs.long()).sum(1).permute(0, 3, 1, 2)
+        return self.embedding(inputs).permute(0,-1,2,3,1)
+
+
+class Conv3dReduce(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.conv3d = nn.Conv3d(**kwargs)
+
+    def forward(self, inputs):
+        conv = self.conv3d(inputs)[:,:,:,:,0].squeeze(-1)
+        return conv
 
 
 class ACModel(nn.Module, babyai.rl.RecurrentACModel):
@@ -82,6 +91,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         endpool = 'endpool' in arch
         self.use_bow = 'bow' in arch
+        self.use_matchembs = 'matchwords'
         self.pixel = 'pixel' in arch
         self.res = 'res' in arch
         self.use_attention = 'attention' in arch
@@ -92,6 +102,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.use_memory = use_memory
         self.arch = arch
         self.lang_model = lang_model
+        self.use_transformer = lang_model == 'transformer'
         self.aux_info = aux_info
         if self.res and image_dim != 128:
             raise ValueError(f"image_dim is {image_dim}, expected 128")
@@ -102,32 +113,43 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         self.obs_space = obs_space
 
         for part in self.arch.split('_'):
-            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'attention', 'film']:
+            if part not in ['original', 'bow', 'pixels', 'endpool', 'res', 'attention', 'film', 'matchwords']:
                 raise ValueError("Incorrect architecture name: {}".format(self.arch))
 
-        if self.lang_model == 'transformer':
-            if not self.use_instr:
-                raise ValueError("Transformers cannot be used when instructions are disabled")
-            self.use_transformer = True
-            self.instr_dim = 768
-            if finetune_transformer:
-                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
-            else:
-                self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
-            self.final_instr_dim = self.instr_dim
-        else:
-            self.use_transformer = False
+        # Define instruction embedding
+        if self.use_instr:
+            if self.lang_model in ['gru', 'bigru', 'attgru']:
+                self.word_embedding = nn.Embedding(obs_space["instr"], self.instr_dim)
+                gru_dim = self.instr_dim
+                if self.lang_model in ['bigru', 'attgru']:
+                    gru_dim //= 2
+                self.instr_rnn = nn.GRU(
+                    self.instr_dim, gru_dim, batch_first=True,
+                    bidirectional=(self.lang_model in ['bigru', 'attgru']))
+                self.final_instr_dim = self.instr_dim
+
+            elif self.lang_model == 'transformer':
+                self.instr_dim = 768
+                if finetune_transformer:
+                    self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased')
+                else:
+                    self.instr_rnn = transformers.DistilBertModel.from_pretrained('distilbert-base-uncased').requires_grad_(False)
+                self.word_embedding = self.instr_rnn.get_input_embeddings()
+                self.final_instr_dim = self.instr_dim
+
+            if self.lang_model in ['attgru', 'transformer']:
+                self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
 
         if use_film:
             self.image_conv = nn.Sequential(*[
                 *([ImageBOWEmbedding(obs_space['image'], 128)] if self.use_bow else []),
-                *([ImageBOWEmbeddingPretrained(self.instr_rnn)] if self.use_transformer and not self.pixel else []),
+                *([ImageBOWEmbeddingMatched(self.word_embedding)] if self.use_matchembs else []),
                 *([nn.Conv2d(
                     in_channels=3, out_channels=128, kernel_size=(8, 8),
                     stride=8, padding=0)] if self.pixel else []),
-                nn.Conv2d(
-                    in_channels=128 if (self.use_bow and not self.use_transformer) or self.pixel else 768 if self.use_transformer else 3, out_channels=128,
-                    kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
+                Conv3dReduce(in_channels = 128 if not self.use_transformer else 768, out_channels = 128, kernel_size = (3, 3, 3) if endpool else (2, 2, 3), padding=(1,1,0)) if self.use_matchembs
+                else nn.Conv2d(
+                    in_channels=128 if self.pixel or self.use_bow else 3, out_channels=128, kernel_size=(3, 3) if endpool else (2, 2), stride=1, padding=1),
                 nn.BatchNorm2d(128),
                 nn.ReLU(),
                 *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)]),
@@ -137,6 +159,17 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 *([] if endpool else [nn.MaxPool2d(kernel_size=(2, 2), stride=2)])
             ])
             self.film_pool = nn.MaxPool2d(kernel_size=(7, 7) if endpool else (2, 2), stride=2)
+
+            if self.use_instr:
+                num_module = 2
+                self.controllers = []
+                for ni in range(num_module):
+                    mod = FiLM(
+                        in_features=self.final_instr_dim,
+                        out_features=128 if ni < num_module-1 else self.image_dim,
+                        in_channels=128, imm_channels=128)
+                    self.controllers.append(mod)
+                    self.add_module('FiLM_' + str(ni), mod)
             
         elif self.use_attention:
             self.image_conv = nn.Sequential(*[
@@ -150,44 +183,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 nn.BatchNorm2d(128),
                 nn.ReLU()
             ])
-        else:
-            raise ValueError("Incorrect Architecture name: {}".format(arch))
 
-        # Define instruction embedding
-        if self.use_instr:
-            if self.lang_model in ['gru', 'bigru', 'attgru']:
-                self.word_embedding = nn.Embedding(obs_space["instr"], self.instr_dim)
-                if self.lang_model in ['gru', 'bigru', 'attgru']:
-                    gru_dim = self.instr_dim
-                    if self.lang_model in ['bigru', 'attgru']:
-                        gru_dim //= 2
-                    self.instr_rnn = nn.GRU(
-                        self.instr_dim, gru_dim, batch_first=True,
-                        bidirectional=(self.lang_model in ['bigru', 'attgru']))
-                    self.final_instr_dim = self.instr_dim
-                elif self.lang_model == 'transformer':
-                    pass
-                else:
-                    kernel_dim = 64
-                    kernel_sizes = [3, 4]
-                    self.instr_convs = nn.ModuleList([
-                        nn.Conv2d(1, kernel_dim, (K, self.instr_dim)) for K in kernel_sizes])
-                    self.final_instr_dim = kernel_dim * len(kernel_sizes)
-
-            if self.lang_model in ['attgru', 'transformer']:
-                self.memory2key = nn.Linear(self.memory_size, self.final_instr_dim)
-              
-            if use_film:
-                num_module = 2
-                self.controllers = []
-                for ni in range(num_module):
-                    mod = FiLM(
-                        in_features=self.final_instr_dim,
-                        out_features=128 if ni < num_module-1 else self.image_dim,
-                        in_channels=128, imm_channels=128)
-                    self.controllers.append(mod)
-                    self.add_module('FiLM_' + str(ni), mod)
-        if self.use_attention:
             self.encoder = Encoder(self.instr_dim, 4, 9, self.instr_dim, self.instr_dim, self.image_dim)
             self.gates = clones(Gate(4, self.image_dim, self.image_dim), 3)
             self.post_cnn = nn.Sequential(*[
@@ -197,6 +193,9 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 nn.MaxPool2d(kernel_size=7, stride=7)
             ])
             self.reattention = ReAttention(4, 128, 128)
+        else:
+            raise ValueError("Incorrect Architecture name: {}".format(arch))
+            
 
         # Define memory and resize image embedding
         self.embedding_size = self.image_dim
