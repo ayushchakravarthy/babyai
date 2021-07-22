@@ -53,6 +53,8 @@ parser.add_argument("--warmup", type=int, default=0,
                     help="number of initial validations to not lose patience")
 parser.add_argument("--acmodel", type=str, default="default",
                     help="model to use")
+parser.add_argument("--conditional-attention", action="store_true", default=False,
+                    help="enable visual attention conditioned on textual attention outputs")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -101,7 +103,8 @@ if acmodel is None:
         if args.acmodel == "gscan":
             acmodel = gSCAN(obss_preprocessor.obs_space, envs[0].action_space,
                             2, args.image_dim, args.memory_dim, args.instr_dim,
-                            args.instr_arch, finetune_transformer=args.finetune_transformer)
+                            args.instr_arch, finetune_transformer=args.finetune_transformer,
+                            conditional_attention=args.conditional_attention)
         else:
             acmodel = ACModel(obss_preprocessor.obs_space, envs[0].action_space,
                               args.image_dim, args.memory_dim, args.instr_dim,

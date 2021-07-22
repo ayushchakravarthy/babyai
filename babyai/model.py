@@ -400,7 +400,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 class gSCAN(nn.Module):
     def __init__(self, obs_space, action_space,
                  num_encoder_layers, image_dim=128, memory_dim=128,
-                 instr_dim=128, lang_model='lstm', aux_info=None, finetune_transformer=False):
+                 instr_dim=128, lang_model='lstm', aux_info=None, finetune_transformer=False, conditional_attention=False):
         super(gSCAN, self).__init__()
     
         self.obs_space = obs_space
@@ -411,6 +411,7 @@ class gSCAN(nn.Module):
         self.instr_dim = instr_dim
         self.image_dim = image_dim * 2
         self.lang_model = lang_model
+        self.conditional_attention = conditional_attention
 
         if self.lang_model == 'transformer':
             self.use_transformer = True
@@ -433,7 +434,8 @@ class gSCAN(nn.Module):
 
         # Used to project the final encoder state to the decoder hidden state such that it can be initialized with it
         self.enc_hidden_to_dec_hidden = nn.Linear(self.final_instr_dim, 128)
-        self.queries_to_keys = nn.Linear(256, 128)
+        if self.conditional_attention:
+            self.queries_to_keys = nn.Linear(256, 128)
         # self.count = 0
         self.textual_attention = Attention(key_size=30522 if self.use_transformer else 128, query_size=128, hidden_size=128)
 
@@ -649,10 +651,13 @@ class gSCAN(nn.Module):
         batch_size, image_num_memory, _ = projected_keys_visual.size()
         situation_lengths = [image_num_memory for _ in range(batch_size)]
 
-        # setup visual attention queries conditioned on textual attention
-        queries = torch.cat([last_hidden.transpose(0, 1), context_command], dim=-1)
-        queries = self.queries_to_keys(queries)
-        queries = torch.tanh(queries)
+        if self.conditional_attention:
+            # setup visual attention queries conditioned on textual attention
+            queries = torch.cat([last_hidden.transpose(0, 1), context_command], dim=-1)
+            queries = self.queries_to_keys(queries)
+            queries = torch.tanh(queries)
+        else:
+            queries = last_hidden.transpose(0, 1)
 
         # context : [batch_size, 1, hidden_size]
         # attention_weights : [batch_size, 1, max_input_length]
