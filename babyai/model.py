@@ -76,7 +76,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
     def __init__(self, obs_space, action_space,
                  image_dim=128, memory_dim=128, instr_dim=128,
                  use_instr=False, lang_model="gru", use_memory=False,
-                 arch="bow_endpool_res", aux_info=None, finetune_transformer = False):
+                 arch="bow_endpool_res", aux_info=None, finetune_transformer=False):
         super().__init__()
 
         endpool = 'endpool' in arch
@@ -400,18 +400,23 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 class gSCAN(nn.Module):
     def __init__(self, obs_space, action_space,
                  num_encoder_layers, image_dim=128, memory_dim=128,
-                 instr_dim=128, lang_model='lstm', aux_info=None, finetune_transformer=False, conditional_attention=False):
+                 instr_dim=128, lang_model='lstm', arch='pixels', finetune_transformer=False, conditional_attention=False, aux_info=None):
         super(gSCAN, self).__init__()
     
         self.obs_space = obs_space
         self.aux_info = aux_info
+
+        self.lang_model = lang_model
+        self.conditional_attention = conditional_attention
+
+        self.use_bow = 'bow' in arch
+        self.pixel = 'pixel' in arch
+
         self.num_decoder_layers = 1
         self.num_encoder_layers = num_encoder_layers
         self.memory_dim = memory_dim
         self.instr_dim = instr_dim
         self.image_dim = image_dim * 2
-        self.lang_model = lang_model
-        self.conditional_attention = conditional_attention
 
         if self.lang_model == 'transformer':
             self.use_transformer = True
@@ -449,8 +454,8 @@ class gSCAN(nn.Module):
 
         # Input: [batch_size, num_channels, image_height, image_width]
         # Output: [batch_size, image_height * image_width, num_conv_channels]
-        self.situation_encoder = ConvNet(in_channels=3,
-                                         out_channels=128)
+        self.situation_encoder = ConvNet(input_channels=3 if self.pixel else obs_space['image'] ,
+                                         use_bow=self.use_bow, use_pixel=self.pixel, use_transformer=self.use_transformer)
 
         # Input: [bsz, 1, decoder_hidden_size], [bsz, image_height * image_width, cnn_hidden_num_channels]
         # Output: [bsz, 1, decoder_hidden_size], [bsz, 1, image_height * image_width]
@@ -608,7 +613,8 @@ class gSCAN(nn.Module):
     def forward(self, obs, memory, probe_attention=False):
         # compute encoder output
         x = torch.transpose(torch.transpose(obs.image, 1, 3), 2, 3)
-        x /= 256.0
+        if self.pixel:
+            x /= 256.0
         encoder_output = self.encode_inputs(obs.instr, x)
 
         # get encoder outputs
