@@ -22,7 +22,7 @@ from babyai.arguments import ArgumentParser
 from babyai.model import ACModel, gSCAN
 from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
-from gym_minigrid.wrappers import RGBImgPartialObsWrapper
+from gym_minigrid.wrappers import RGBImgPartialObsWrapper, RGBImgObsWrapper
 
 
 # Parse arguments
@@ -55,6 +55,8 @@ parser.add_argument("--acmodel", type=str, default="default",
                     help="model to use")
 parser.add_argument("--conditional-attention", action="store_true", default=False,
                     help="enable visual attention conditioned on textual attention outputs")
+parser.add_argument("--observability", default='partial',
+                    help="environment observability")
 args = parser.parse_args()
 
 utils.seed(args.seed)
@@ -65,7 +67,12 @@ use_pixel = 'pixels' in args.arch
 for i in range(args.procs):
     env = gym.make(args.env)
     if use_pixel:
-        env = RGBImgPartialObsWrapper(env)
+        if args.observability:
+            env = RGBImgPartialObsWrapper(env)
+        elif args.observability:
+            env = RGBImgObsWrapper(env)
+        else:
+            raise ValueError("incorrect observability")
     env.seed(100 * args.seed + i)
     envs.append(env)
 
@@ -124,6 +131,12 @@ if torch.cuda.is_available():
 reshape_reward = lambda _0, _1, reward, _2: args.reward_scale * reward
 if args.algo == "ppo":
     algo = babyai.rl.PPOAlgo(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.beta1, args.beta2,
+                             args.gae_lambda,
+                             args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
+                             args.optim_eps, args.clip_eps, args.ppo_epochs, args.batch_size, obss_preprocessor,
+                             reshape_reward)
+elif args.algo == "a2c":
+    algo = babyai.rl.A2CAlgo(envs, acmodel, args.frames_per_proc, args.discount, args.lr, args.beta1, args.beta2,
                              args.gae_lambda,
                              args.entropy_coef, args.value_loss_coef, args.max_grad_norm, args.recurrence,
                              args.optim_eps, args.clip_eps, args.ppo_epochs, args.batch_size, obss_preprocessor,
