@@ -289,20 +289,43 @@ class ConvolutionalNet(nn.Module):
         images_features = self.layers(images_features)
         return images_features.reshape(batch_size, image_dimension * image_dimension, num_channels)
 
+class ImageBOWEmbedding(nn.Module):
+   def __init__(self, max_value, embedding_dim):
+       super().__init__()
+       self.max_value = max_value
+       self.embedding_dim = embedding_dim
+       self.embedding = nn.Embedding(3 * max_value, embedding_dim)
+       self.apply(initialize_parameters)
+
+   def forward(self, inputs):
+       offsets = torch.Tensor([0, self.max_value, 2 * self.max_value]).to(inputs.device)
+       inputs = (inputs + offsets[None, :, None, None]).long()
+       return self.embedding(inputs).sum(1).permute(0, 3, 1, 2)
+
 class ConvNet(nn.Module):
     def __init__(
-        self, 
-        in_channels: int,
-        out_channels: int
+        self,
+        input_channels: int,
+        use_pixel: bool,
+        use_bow: bool,
+        use_transformer: bool
     ):
         super(ConvNet, self).__init__()
-        self.output_dim = out_channels
+        self.use_pixel = use_pixel
+        self.use_bow = use_bow
+        self.use_transformer = use_transformer
+        self.output_dim = 128
+
+        if use_pixel and use_bow:
+                raise ValueError("Incorrect architecture name")
+
 
         self.image_conv = nn.Sequential(*[
-            nn.Conv2d(in_channels=in_channels, out_channels=128, kernel_size=(8, 8),
-            stride=8, padding=0),
-            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3),
-            stride=1, padding=1),
+            *([ImageBOWEmbedding(input_channels, 128)] if self.use_bow else []),
+            *([nn.Conv2d(in_channels=input_channels, out_channels=128, kernel_size=(8, 8),
+            stride=8, padding=0)] if self.use_pixel else []),
+            nn.Conv2d(in_channels=128 if self.use_bow or self.use_pixel else 768 if self.use_transformer else 3, out_channels=128,
+            kernel_size=(3, 3), stride=1, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2),
@@ -310,8 +333,8 @@ class ConvNet(nn.Module):
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2), stride=2),
-            nn.Conv2d(in_channels=128, out_channels=out_channels, kernel_size=(3, 3), padding=1),
-            nn.BatchNorm2d(out_channels)
+            nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding=1),
+            nn.BatchNorm2d(128)
         ])
     def forward(self, input_image):
         batch_size = input_image.size(0)
